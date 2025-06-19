@@ -1,0 +1,66 @@
+# Example configuration for ingesting user events from Kafka to Delta Lake on S3
+
+kafka:
+  bootstrap_servers: "localhost:9092"
+  topic: "user-events"
+  consumer_group: "delta-ingest-user-events"
+  security_protocol: "PLAINTEXT"
+  auto_offset_reset: "earliest"
+  session_timeout_ms: 30000
+  heartbeat_interval_ms: 3000
+  max_poll_records: 1000
+
+s3:
+  bucket: "my-data-lake"
+  region: "us-east-1"
+  prefix: "delta-tables"
+
+delta:
+  table_name: "user_events"
+  write_mode: "append"
+  merge_schema: false
+  overwrite_schema: false
+  partition_columns: 
+    - "event_date"
+    - "event_type"
+  schema:
+    - name: "user_id"
+      data_type: "utf8"
+      nullable: false
+    - name: "event_type"
+      data_type: "utf8"
+      nullable: false
+    - name: "event_timestamp"
+      data_type: "timestamp_millisecond"
+      nullable: false
+    - name: "event_date"
+      data_type: "utf8"
+      nullable: false
+    - name: "session_id"
+      data_type: "utf8"
+      nullable: true
+    - name: "page_url"
+      data_type: "utf8"
+      nullable: true
+    - name: "referrer"
+      data_type: "utf8"
+      nullable: true
+    - name: "user_agent"
+      data_type: "utf8"
+      nullable: true
+    - name: "ip_address"
+      data_type: "utf8"
+      nullable: true
+    - name: "properties"
+      data_type: "utf8"
+      nullable: true
+
+processing:
+  batch_size: 1000
+  batch_timeout_ms: 30000
+  max_retries: 3
+  retry_delay_ms: 1000
+  enable_compression: true
+  compression_type: "snappy"
+  enable_metrics: true
+  checkpoint_interval_ms: 60000
