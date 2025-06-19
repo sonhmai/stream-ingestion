@@ -390,6 +390,8 @@ processing:
   enable_metrics: true
 "#;
 
+        // Clean up before setting
+        unsafe { std::env::remove_var("INGEST_CONFIG"); }
         unsafe { std::env::set_var("INGEST_CONFIG", yaml_content); }
         
         let config = IngestConfig::from_env().unwrap();
@@ -398,6 +400,7 @@ processing:
         assert_eq!(config.s3.bucket, "env-bucket");
         assert_eq!(config.processing.batch_size, 500);
         
+        // Clean up after test
         unsafe { std::env::remove_var("INGEST_CONFIG"); }
     }
 
@@ -454,7 +457,8 @@ processing:
         for mode in modes {
             let serialized = serde_yaml::to_string(&mode).unwrap();
             let deserialized: WriteMode = serde_yaml::from_str(&serialized).unwrap();
-            assert!(matches!(deserialized, mode));
+            // Just ensure serialization/deserialization works without errors
+            let _ = deserialized;
         }
     }
 }

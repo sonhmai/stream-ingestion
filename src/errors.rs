@@ -39,7 +39,11 @@ pub enum ConfigError {
     ValidationFailed { reason: String },
 
     #[error("Failed to load configuration from {source}: {error}")]
-    LoadFailed { source: String, error: String },
+    LoadFailed { 
+        source: String, 
+        #[source]
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -305,10 +309,9 @@ mod tests {
     #[test]
     fn test_stream_ingest_error_from_serde_yaml_error() {
         let yaml_str = r#"
-invalid:
-  - yaml
-  - structure
-    - nested
+invalid yaml content:
+  - missing quotes
+  - "improper: structure
 "#;
         let yaml_error = serde_yaml::from_str::<serde_yaml::Value>(yaml_str).unwrap_err();
         let stream_error = StreamIngestError::from(yaml_error);
@@ -451,7 +454,10 @@ invalid:
             ConfigError::Invalid { message: "test".to_string() },
             ConfigError::MissingField { field: "test".to_string() },
             ConfigError::ValidationFailed { reason: "test".to_string() },
-            ConfigError::LoadFailed { source: "test".to_string(), error: "test".to_string() },
+            ConfigError::LoadFailed { 
+                source: "test".to_string(), 
+                error: Box::new(std::io::Error::new(std::io::ErrorKind::Other, "test error"))
+            },
         ];
 
         let _kafka_errors = vec![
