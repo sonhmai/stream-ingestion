@@ -9,8 +9,7 @@ lambda_runtime = "0.8"
 lambda-web = "0.2"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 
-# Kafka client - temporarily disabled for testing
-# rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl"] }
+rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl"] }
 
 # Delta Lake - temporarily disabled for testing
 # deltalake = { version = "0.17", features = ["s3", "datafusion"] }

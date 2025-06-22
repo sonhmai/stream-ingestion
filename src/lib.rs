@@ -3,6 +3,7 @@ pub mod config;
 // pub mod delta;  // Temporarily disabled for testing
 pub mod s3;     // Re-enabled for testing
 pub mod errors;
+mod delta;
 
 pub use config::IngestConfig;
 // pub use kafka::{KafkaConsumerClient, KafkaMessage, parse_json_message, extract_partition_values};  // Temporarily disabled for testing
