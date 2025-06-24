@@ -1,0 +1,66 @@
+version: 1
+compute:
+  backend: lambda
+  options:
+    lambda_name: "data-lake-ingest-source1-schema1-customer"
+    tags:
+      application: "app"
+      project-id: "project"
+streams:
+  - name: "source1-schema1-customer"
+    source:
+      type: "kafka"
+      options:
+        bootstrap_servers: "broker1:9092,broker2:9092,broker3:9092"
+        topic: "financial-transactions"
+        consumer_group: "delta-ingest-transactions"
+        security_protocol: "SASL_SSL"
+        sasl_mechanisms: "PLAIN"
+        sasl_username: "${KAFKA_USERNAME}"
+        sasl_password: "${KAFKA_PASSWORD}"
+        auto_offset_reset: "earliest"
+        session_timeout_ms: 45000
+        heartbeat_interval_ms: 3000
+        max_poll_records: 500
+
+    processing:
+      batch_size: 500
+      batch_timeout_ms: 20000
+      max_retries: 5
+      retry_delay_ms: 2000
+      enable_compression: true
+      compression_type: "zstd"
+      enable_metrics: true
+      checkpoint_interval_ms: 30000
+
+    target:
+      type: "s3"
+      options:
+        format: "delta"
+        path: "s3://data-lake/raw/source1/schema1/customer"
+        region: "us-west-2"
+        database_name: "raw"
+        catalog_name: "source1"
+        table_name: "source1-schema1-customer"
+        write_mode: "append"
+        merge_schema: true
+        overwrite_schema: false
+        partition_columns:
+          - "transaction_date"
+          - "currency"
+        table_schema:
+          - name: "transaction_id"
+            data_type: "utf8"
+            nullable: false
+          - name: "account_id"
+            data_type: "utf8"
+            nullable: false
+          - name: "transaction_type"
+            data_type: "utf8"
+            nullable: false
+          - name: "amount"
+            data_type: "decimal128"
+            nullable: false
+          - name: "currency"
+            data_type: "utf8"
+            nullable: false
