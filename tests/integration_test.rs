@@ -29,14 +29,12 @@ fn test_basic_config_loading() {
         },
         delta: DeltaConfig {
             table_name: "test_table".to_string(),
-            schema: vec![
-                SchemaField {
-                    name: "id".to_string(),
-                    data_type: DataType::Int64,
-                    nullable: false,
-                    metadata: None,
-                },
-            ],
+            schema: vec![SchemaField {
+                name: "id".to_string(),
+                data_type: DataType::Int64,
+                nullable: false,
+                metadata: None,
+            }],
             partition_columns: Some(vec!["date".to_string()]),
             write_mode: WriteMode::Append,
             merge_schema: false,
@@ -53,15 +51,15 @@ fn test_error_types() {
     let kafka_error = KafkaError::ConsumerCreation {
         reason: "Connection failed".to_string(),
     };
-    
+
     let stream_error = StreamIngestError::Kafka(kafka_error);
     assert!(stream_error.is_retryable());
     assert_eq!(stream_error.get_retry_delay_ms(), 1000);
-    
+
     let config_error = ConfigError::ValidationFailed {
         reason: "Invalid field".to_string(),
     };
-    
+
     let stream_error2 = StreamIngestError::Config(config_error);
     assert!(!stream_error2.is_retryable());
 }

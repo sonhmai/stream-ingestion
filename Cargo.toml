@@ -7,15 +7,12 @@ edition = "2024"
 # AWS Lambda runtime
 lambda_runtime = "0.8"
 lambda-web = "0.2"
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl"] }
+rdkafka = { version = "0.36.2", features = ["dynamic-linking"] }
 
-# Delta Lake - temporarily disabled for testing
-# deltalake = { version = "0.17", features = ["s3", "datafusion"] }
-# arrow = { version = "49.0", features = ["json"] }
-# arrow-schema = "49.0"
-# datafusion = "34.0"
+deltalake = { version = "0.26.2", features = ["s3", "datafusion"] }
+arrow = { version = "55.1.0", features = ["json"] }
 
 # AWS SDK
 aws-config = "1.0"

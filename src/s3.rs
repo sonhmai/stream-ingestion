@@ -14,21 +14,19 @@ pub struct S3Client {
 impl S3Client {
     pub async fn new(config: S3Config) -> Result<Self> {
         let region = aws_config::Region::new(config.region.clone());
-        
-        let mut aws_config_builder = aws_config::defaults(BehaviorVersion::latest())
-            .region(region);
+
+        let mut aws_config_builder = aws_config::defaults(BehaviorVersion::latest()).region(region);
 
         if let Some(access_key) = &config.access_key_id {
             if let Some(secret_key) = &config.secret_access_key {
-                aws_config_builder = aws_config_builder.credentials_provider(
-                    aws_sdk_s3::config::Credentials::new(
+                aws_config_builder =
+                    aws_config_builder.credentials_provider(aws_sdk_s3::config::Credentials::new(
                         access_key,
                         secret_key,
                         config.session_token.clone(),
                         None,
                         "stream-ingest",
-                    )
-                );
+                    ));
             }
         }
 
@@ -50,18 +48,27 @@ impl S3Client {
     }
 
     pub async fn ensure_bucket_exists(&self) -> Result<()> {
-        match self.client.head_bucket()
+        match self
+            .client
+            .head_bucket()
             .bucket(&self.config.bucket)
             .send()
             .await
         {
             Ok(_) => {
-                info!("S3 bucket '{}' exists and is accessible", self.config.bucket);
+                info!(
+                    "S3 bucket '{}' exists and is accessible",
+                    self.config.bucket
+                );
                 Ok(())
             }
             Err(e) => {
                 warn!("Cannot access S3 bucket '{}': {}", self.config.bucket, e);
-                Err(anyhow::anyhow!("S3 bucket '{}' is not accessible: {}", self.config.bucket, e))
+                Err(anyhow::anyhow!(
+                    "S3 bucket '{}' is not accessible: {}",
+                    self.config.bucket,
+                    e
+                ))
             }
         }
     }
@@ -70,7 +77,8 @@ impl S3Client {
         let mut table_names = Vec::new();
         let prefix = format!("{}/", self.config.prefix.trim_end_matches('/'));
 
-        let response = self.client
+        let response = self
+            .client
             .list_objects_v2()
             .bucket(&self.config.bucket)
             .prefix(&prefix)
@@ -85,7 +93,7 @@ impl S3Client {
                     .strip_prefix(&format!("{}/", self.config.prefix.trim_end_matches('/')))
                     .unwrap_or(prefix)
                     .trim_end_matches('/');
-                
+
                 if !table_name.is_empty() {
                     table_names.push(table_name.to_string());
                 }
@@ -97,14 +105,16 @@ impl S3Client {
     }
 
     pub async fn check_delta_table_exists(&self, table_name: &str) -> Result<bool> {
-        let table_path = format!("{}/{}", 
-            self.config.prefix.trim_end_matches('/'), 
+        let table_path = format!(
+            "{}/{}",
+            self.config.prefix.trim_end_matches('/'),
             table_name
         );
 
         let log_path = format!("{}/_delta_log/", table_path);
 
-        let response = self.client
+        let response = self
+            .client
             .list_objects_v2()
             .bucket(&self.config.bucket)
             .prefix(&log_path)
@@ -114,20 +124,22 @@ impl S3Client {
             .context("Failed to check Delta table existence")?;
 
         let exists = !response.contents().is_empty();
-        
+
         debug!("Delta table '{}' exists: {}", table_name, exists);
         Ok(exists)
     }
 
     pub async fn get_table_metadata(&self, table_name: &str) -> Result<HashMap<String, String>> {
-        let table_path = format!("{}/{}", 
-            self.config.prefix.trim_end_matches('/'), 
+        let table_path = format!(
+            "{}/{}",
+            self.config.prefix.trim_end_matches('/'),
             table_name
         );
 
         let log_path = format!("{}/_delta_log/", table_path);
 
-        let response = self.client
+        let response = self
+            .client
             .list_objects_v2()
             .bucket(&self.config.bucket)
             .prefix(&log_path)
@@ -136,12 +148,13 @@ impl S3Client {
             .context("Failed to get table metadata")?;
 
         let mut metadata = HashMap::new();
-        
+
         let contents = response.contents();
         if !contents.is_empty() {
             metadata.insert("file_count".to_string(), contents.len().to_string());
-            
-            if let Some(latest_file) = contents.iter()
+
+            if let Some(latest_file) = contents
+                .iter()
                 .filter(|obj| obj.key().map(|k| k.ends_with(".json")).unwrap_or(false))
                 .max_by_key(|obj| obj.last_modified())
             {
@@ -154,20 +167,25 @@ impl S3Client {
             }
         }
 
-        metadata.insert("table_path".to_string(), format!("s3://{}/{}", self.config.bucket, table_path));
-        
+        metadata.insert(
+            "table_path".to_string(),
+            format!("s3://{}/{}", self.config.bucket, table_path),
+        );
+
         Ok(metadata)
     }
 
     pub async fn cleanup_old_files(&self, table_name: &str, retention_days: u32) -> Result<usize> {
-        let table_path = format!("{}/{}", 
-            self.config.prefix.trim_end_matches('/'), 
+        let table_path = format!(
+            "{}/{}",
+            self.config.prefix.trim_end_matches('/'),
             table_name
         );
 
         let cutoff_time = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
 
-        let response = self.client
+        let response = self
+            .client
             .list_objects_v2()
             .bucket(&self.config.bucket)
             .prefix(&table_path)
@@ -180,11 +198,15 @@ impl S3Client {
         let contents = response.contents();
         for object in contents {
             if let (Some(key), Some(last_modified)) = (object.key(), object.last_modified()) {
-                if last_modified < &aws_sdk_s3::primitives::DateTime::from(std::time::SystemTime::from(cutoff_time)) && 
-                   !key.contains("_delta_log/") && 
-                   !key.ends_with(".checkpoint.parquet") {
-                    
-                    match self.client
+                if last_modified
+                    < &aws_sdk_s3::primitives::DateTime::from(std::time::SystemTime::from(
+                        cutoff_time,
+                    ))
+                    && !key.contains("_delta_log/")
+                    && !key.ends_with(".checkpoint.parquet")
+                {
+                    match self
+                        .client
                         .delete_object()
                         .bucket(&self.config.bucket)
                         .key(key)
@@ -204,7 +226,10 @@ impl S3Client {
         }
 
         if deleted_count > 0 {
-            info!("Cleaned up {} old files from table '{}'", deleted_count, table_name);
+            info!(
+                "Cleaned up {} old files from table '{}'",
+                deleted_count, table_name
+            );
         }
 
         Ok(deleted_count)
@@ -213,7 +238,8 @@ impl S3Client {
     pub async fn get_bucket_metrics(&self) -> Result<HashMap<String, String>> {
         let mut metrics = HashMap::new();
 
-        let response = self.client
+        let response = self
+            .client
             .list_objects_v2()
             .bucket(&self.config.bucket)
             .prefix(&self.config.prefix)
@@ -223,15 +249,16 @@ impl S3Client {
 
         let contents = response.contents();
         if !contents.is_empty() {
-            let total_size: i64 = contents.iter()
-                .filter_map(|obj| obj.size())
-                .sum();
-                
+            let total_size: i64 = contents.iter().filter_map(|obj| obj.size()).sum();
+
             let total_files = contents.len();
-            
+
             metrics.insert("total_files".to_string(), total_files.to_string());
             metrics.insert("total_size_bytes".to_string(), total_size.to_string());
-            metrics.insert("total_size_mb".to_string(), (total_size / 1024 / 1024).to_string());
+            metrics.insert(
+                "total_size_mb".to_string(),
+                (total_size / 1024 / 1024).to_string(),
+            );
         }
 
         metrics.insert("bucket_name".to_string(), self.config.bucket.clone());
@@ -244,7 +271,8 @@ impl S3Client {
     pub async fn health_check(&self) -> Result<()> {
         self.ensure_bucket_exists().await?;
 
-        let test_key = format!("{}/_health_check/test.txt", 
+        let test_key = format!(
+            "{}/_health_check/test.txt",
             self.config.prefix.trim_end_matches('/')
         );
         let test_content = format!("Health check at {}", chrono::Utc::now().to_rfc3339());
@@ -258,7 +286,8 @@ impl S3Client {
             .await
             .context("Failed to write health check file")?;
 
-        let response = self.client
+        let response = self
+            .client
             .get_object()
             .bucket(&self.config.bucket)
             .key(&test_key)
@@ -266,7 +295,10 @@ impl S3Client {
             .await
             .context("Failed to read health check file")?;
 
-        let _body = response.body.collect().await
+        let _body = response
+            .body
+            .collect()
+            .await
             .context("Failed to collect health check response body")?;
 
         self.client
@@ -282,8 +314,9 @@ impl S3Client {
     }
 
     pub fn get_table_uri(&self, table_name: &str) -> String {
-        format!("s3://{}/{}/{}", 
-            self.config.bucket, 
+        format!(
+            "s3://{}/{}/{}",
+            self.config.bucket,
             self.config.prefix.trim_end_matches('/'),
             table_name
         )
@@ -342,7 +375,7 @@ mod tests {
             .behavior_version(BehaviorVersion::latest())
             .region(aws_config::Region::new(config.region.clone()))
             .credentials_provider(aws_sdk_s3::config::Credentials::new(
-                "test", "test", None, None, "test"
+                "test", "test", None, None, "test",
             ))
             .build();
         let client = Client::from_conf(aws_config);
@@ -362,7 +395,7 @@ mod tests {
     fn test_get_table_uri_with_trailing_slash() {
         let mut config = create_test_s3_config();
         config.prefix = "test-prefix/".to_string();
-        
+
         let client = create_mock_s3_client(config);
 
         let uri = client.get_table_uri("user_events");
@@ -373,7 +406,7 @@ mod tests {
     fn test_get_table_uri_empty_prefix() {
         let mut config = create_test_s3_config();
         config.prefix = "".to_string();
-        
+
         let client = create_mock_s3_client(config);
 
         let uri = client.get_table_uri("transactions");
@@ -398,10 +431,22 @@ mod tests {
         assert_eq!(returned_config.bucket, "test-bucket");
         assert_eq!(returned_config.region, "us-west-2");
         assert_eq!(returned_config.prefix, "delta-tables");
-        assert_eq!(returned_config.access_key_id, Some("AKIATEST123".to_string()));
-        assert_eq!(returned_config.secret_access_key, Some("secret123".to_string()));
-        assert_eq!(returned_config.session_token, Some("session123".to_string()));
-        assert_eq!(returned_config.endpoint_url, Some("https://s3.custom-endpoint.com".to_string()));
+        assert_eq!(
+            returned_config.access_key_id,
+            Some("AKIATEST123".to_string())
+        );
+        assert_eq!(
+            returned_config.secret_access_key,
+            Some("secret123".to_string())
+        );
+        assert_eq!(
+            returned_config.session_token,
+            Some("session123".to_string())
+        );
+        assert_eq!(
+            returned_config.endpoint_url,
+            Some("https://s3.custom-endpoint.com".to_string())
+        );
     }
 
     #[test]
@@ -451,18 +496,25 @@ mod tests {
     #[test]
     fn test_table_path_generation() {
         let config = create_test_s3_config();
-        
+
         // Test various table path scenarios
         let test_cases = vec![
             ("simple_table", "test-prefix/simple_table"),
             ("nested/table", "test-prefix/nested/table"),
-            ("table_with_underscores", "test-prefix/table_with_underscores"),
+            (
+                "table_with_underscores",
+                "test-prefix/table_with_underscores",
+            ),
             ("table-with-dashes", "test-prefix/table-with-dashes"),
         ];
 
         for (table_name, expected_suffix) in test_cases {
             let expected_path = format!("{}/{}", config.prefix.trim_end_matches('/'), table_name);
-            assert_eq!(expected_path, expected_suffix, "Failed for table: '{}'", table_name);
+            assert_eq!(
+                expected_path, expected_suffix,
+                "Failed for table: '{}'",
+                table_name
+            );
         }
     }
 
@@ -470,18 +522,21 @@ mod tests {
     fn test_log_path_generation() {
         let config = create_test_s3_config();
         let table_name = "user_events";
-        
+
         let table_path = format!("{}/{}", config.prefix.trim_end_matches('/'), table_name);
         let log_path = format!("{}/_delta_log/", table_path);
-        
+
         assert_eq!(log_path, "test-prefix/user_events/_delta_log/");
     }
 
     #[test]
     fn test_health_check_file_path() {
         let config = create_test_s3_config();
-        let expected_path = format!("{}/_health_check/test.txt", config.prefix.trim_end_matches('/'));
-        
+        let expected_path = format!(
+            "{}/_health_check/test.txt",
+            config.prefix.trim_end_matches('/')
+        );
+
         assert_eq!(expected_path, "test-prefix/_health_check/test.txt");
     }
 
@@ -490,37 +545,44 @@ mod tests {
         let retention_days = 7u32;
         let cutoff_time = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
         let now = chrono::Utc::now();
-        
+
         // Verify that cutoff time is before now
         assert!(cutoff_time < now);
-        
+
         // Verify the duration is approximately correct (within 1 second tolerance)
         let duration = now - cutoff_time;
         let expected_seconds = retention_days as i64 * 24 * 60 * 60;
         let actual_seconds = duration.num_seconds();
-        
-        assert!((actual_seconds - expected_seconds).abs() <= 1, 
-               "Expected ~{} seconds, got {} seconds", expected_seconds, actual_seconds);
+
+        assert!(
+            (actual_seconds - expected_seconds).abs() <= 1,
+            "Expected ~{} seconds, got {} seconds",
+            expected_seconds,
+            actual_seconds
+        );
     }
 
     #[test]
     fn test_file_filtering_logic() {
         // Test the logic used in cleanup_old_files for determining which files to delete
         let test_files = vec![
-            ("data/file1.parquet", false), // Should be deletable
-            ("data/_delta_log/00000.json", true), // Should be preserved (delta log)
+            ("data/file1.parquet", false),                // Should be deletable
+            ("data/_delta_log/00000.json", true),         // Should be preserved (delta log)
             ("data/checkpoint.checkpoint.parquet", true), // Should be preserved (checkpoint)
-            ("data/regular_file.txt", false), // Should be deletable
-            ("_delta_log/transaction.json", true), // Should be preserved (delta log)
+            ("data/regular_file.txt", false),             // Should be deletable
+            ("_delta_log/transaction.json", true),        // Should be preserved (delta log)
         ];
 
         for (file_path, should_preserve) in test_files {
             let is_delta_log = file_path.contains("_delta_log/");
             let is_checkpoint = file_path.ends_with(".checkpoint.parquet");
             let should_skip = is_delta_log || is_checkpoint;
-            
-            assert_eq!(should_skip, should_preserve, 
-                      "File '{}' preservation logic failed", file_path);
+
+            assert_eq!(
+                should_skip, should_preserve,
+                "File '{}' preservation logic failed",
+                file_path
+            );
         }
     }
 
@@ -542,11 +604,14 @@ mod tests {
         // Test the logic used in list_delta_tables for extracting table names
         let base_prefix = "delta-tables";
         let full_prefix = format!("{}/", base_prefix);
-        
+
         let test_cases = vec![
             (format!("{}user_events/", full_prefix), "user_events"),
             (format!("{}transactions/", full_prefix), "transactions"),
-            (format!("{}analytics/daily/", full_prefix), "analytics/daily"),
+            (
+                format!("{}analytics/daily/", full_prefix),
+                "analytics/daily",
+            ),
             (format!("{}", full_prefix), ""), // Empty case
         ];
 
@@ -555,20 +620,23 @@ mod tests {
                 .strip_prefix(&full_prefix)
                 .unwrap_or(&input_prefix)
                 .trim_end_matches('/');
-            
-            assert_eq!(table_name, expected_table_name, 
-                      "Failed to extract table name from: '{}'", input_prefix);
+
+            assert_eq!(
+                table_name, expected_table_name,
+                "Failed to extract table name from: '{}'",
+                input_prefix
+            );
         }
     }
 
     #[test]
     fn test_empty_responses_handling() {
         // Test how the code handles empty AWS API responses
-        
+
         // Empty contents list
         let empty_contents: Vec<aws_sdk_s3::types::Object> = vec![];
         assert!(empty_contents.is_empty());
-        
+
         // Verify empty check logic
         let has_files = !empty_contents.is_empty();
         assert!(!has_files);
@@ -588,25 +656,25 @@ mod tests {
         // Ensure URI formats are consistent across methods
         let config = create_test_s3_config();
         let table_name = "test_table";
-        
+
         // URI from get_table_uri
-        let uri1 = format!("s3://{}/{}/{}", 
-                          config.bucket, 
-                          config.prefix.trim_end_matches('/'),
-                          table_name);
-        
+        let uri1 = format!(
+            "s3://{}/{}/{}",
+            config.bucket,
+            config.prefix.trim_end_matches('/'),
+            table_name
+        );
+
         // URI format used in get_table_metadata
-        let table_path = format!("{}/{}", 
-                                config.prefix.trim_end_matches('/'), 
-                                table_name);
+        let table_path = format!("{}/{}", config.prefix.trim_end_matches('/'), table_name);
         let uri2 = format!("s3://{}/{}", config.bucket, table_path);
-        
+
         assert_eq!(uri1, uri2, "URI formats should be consistent");
     }
 
     // Note: Integration tests that require actual AWS SDK calls would go in a separate file
     // or be marked with #[ignore] and run only when AWS credentials are available
-    
+
     #[test]
     #[ignore] // Requires AWS credentials and actual S3 access
     fn test_s3_client_creation_integration() {

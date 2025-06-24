@@ -39,8 +39,8 @@ pub enum ConfigError {
     ValidationFailed { reason: String },
 
     #[error("Failed to load configuration from {source}: {error}")]
-    LoadFailed { 
-        source: String, 
+    LoadFailed {
+        source: String,
         #[source]
         error: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -100,13 +100,25 @@ pub enum S3Error {
     ListObjects { bucket: String, reason: String },
 
     #[error("Failed to upload object to s3://{bucket}/{key}: {reason}")]
-    Upload { bucket: String, key: String, reason: String },
+    Upload {
+        bucket: String,
+        key: String,
+        reason: String,
+    },
 
     #[error("Failed to download object from s3://{bucket}/{key}: {reason}")]
-    Download { bucket: String, key: String, reason: String },
+    Download {
+        bucket: String,
+        key: String,
+        reason: String,
+    },
 
     #[error("Failed to delete object s3://{bucket}/{key}: {reason}")]
-    Delete { bucket: String, key: String, reason: String },
+    Delete {
+        bucket: String,
+        key: String,
+        reason: String,
+    },
 
     #[error("S3 health check failed: {reason}")]
     HealthCheck { reason: String },
@@ -142,10 +154,10 @@ pub enum SerializationError {
     Arrow { reason: String },
 
     #[error("Data type conversion failed from {from_type} to {to_type}: {reason}")]
-    TypeConversion { 
-        from_type: String, 
-        to_type: String, 
-        reason: String 
+    TypeConversion {
+        from_type: String,
+        to_type: String,
+        reason: String,
     },
 }
 
@@ -245,7 +257,10 @@ mod tests {
         let error = KafkaError::ConsumerCreation {
             reason: "Connection failed".to_string(),
         };
-        assert_eq!(error.to_string(), "Failed to create consumer: Connection failed");
+        assert_eq!(
+            error.to_string(),
+            "Failed to create consumer: Connection failed"
+        );
     }
 
     #[test]
@@ -253,7 +268,10 @@ mod tests {
         let error = DeltaError::TableCreation {
             reason: "Schema invalid".to_string(),
         };
-        assert_eq!(error.to_string(), "Failed to create Delta table: Schema invalid");
+        assert_eq!(
+            error.to_string(),
+            "Failed to create Delta table: Schema invalid"
+        );
     }
 
     #[test]
@@ -262,7 +280,10 @@ mod tests {
             bucket: "test-bucket".to_string(),
             reason: "Access denied".to_string(),
         };
-        assert_eq!(error.to_string(), "Bucket test-bucket is not accessible: Access denied");
+        assert_eq!(
+            error.to_string(),
+            "Bucket test-bucket is not accessible: Access denied"
+        );
     }
 
     #[test]
@@ -285,7 +306,7 @@ mod tests {
             reason: "Test validation".to_string(),
         };
         let stream_error = StreamIngestError::from(config_error);
-        
+
         match stream_error {
             StreamIngestError::Config(ConfigError::ValidationFailed { reason }) => {
                 assert_eq!(reason, "Test validation");
@@ -299,7 +320,7 @@ mod tests {
         let json_str = r#"{"invalid": json}"#;
         let json_error = serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
         let stream_error = StreamIngestError::from(json_error);
-        
+
         match stream_error {
             StreamIngestError::Serialization(SerializationError::Json { .. }) => {}
             _ => panic!("Expected Serialization error"),
@@ -315,7 +336,7 @@ invalid yaml content:
 "#;
         let yaml_error = serde_yaml::from_str::<serde_yaml::Value>(yaml_str).unwrap_err();
         let stream_error = StreamIngestError::from(yaml_error);
-        
+
         match stream_error {
             StreamIngestError::Serialization(SerializationError::Yaml { .. }) => {}
             _ => panic!("Expected Serialization error"),
@@ -347,7 +368,11 @@ invalid yaml content:
         ];
 
         for error in retryable_errors {
-            assert!(error.is_retryable(), "Error should be retryable: {:?}", error);
+            assert!(
+                error.is_retryable(),
+                "Error should be retryable: {:?}",
+                error
+            );
         }
 
         let non_retryable_errors = vec![
@@ -362,7 +387,11 @@ invalid yaml content:
         ];
 
         for error in non_retryable_errors {
-            assert!(!error.is_retryable(), "Error should not be retryable: {:?}", error);
+            assert!(
+                !error.is_retryable(),
+                "Error should not be retryable: {:?}",
+                error
+            );
         }
     }
 
@@ -381,7 +410,11 @@ invalid yaml content:
         ];
 
         for error in skip_errors {
-            assert!(error.should_skip_message(), "Error should skip message: {:?}", error);
+            assert!(
+                error.should_skip_message(),
+                "Error should skip message: {:?}",
+                error
+            );
         }
 
         let no_skip_errors = vec![
@@ -397,30 +430,47 @@ invalid yaml content:
         ];
 
         for error in no_skip_errors {
-            assert!(!error.should_skip_message(), "Error should not skip message: {:?}", error);
+            assert!(
+                !error.should_skip_message(),
+                "Error should not skip message: {:?}",
+                error
+            );
         }
     }
 
     #[test]
     fn test_get_retry_delay_ms() {
         let test_cases = vec![
-            (StreamIngestError::Kafka(KafkaError::Consumption {
-                reason: "test".to_string(),
-            }), 1000),
-            (StreamIngestError::Delta(DeltaError::Write {
-                reason: "test".to_string(),
-            }), 2000),
-            (StreamIngestError::S3(S3Error::Upload {
-                bucket: "test".to_string(),
-                key: "test".to_string(),
-                reason: "test".to_string(),
-            }), 3000),
+            (
+                StreamIngestError::Kafka(KafkaError::Consumption {
+                    reason: "test".to_string(),
+                }),
+                1000,
+            ),
+            (
+                StreamIngestError::Delta(DeltaError::Write {
+                    reason: "test".to_string(),
+                }),
+                2000,
+            ),
+            (
+                StreamIngestError::S3(S3Error::Upload {
+                    bucket: "test".to_string(),
+                    key: "test".to_string(),
+                    reason: "test".to_string(),
+                }),
+                3000,
+            ),
             (StreamIngestError::Lambda(LambdaError::Timeout), 5000),
         ];
 
         for (error, expected_delay) in test_cases {
-            assert_eq!(error.get_retry_delay_ms(), expected_delay, 
-                      "Retry delay mismatch for error: {:?}", error);
+            assert_eq!(
+                error.get_retry_delay_ms(),
+                expected_delay,
+                "Retry delay mismatch for error: {:?}",
+                error
+            );
         }
     }
 
@@ -431,9 +481,11 @@ invalid yaml content:
             to_type: "Integer".to_string(),
             reason: "Invalid format".to_string(),
         };
-        
-        assert_eq!(error.to_string(), 
-                  "Data type conversion failed from String to Integer: Invalid format");
+
+        assert_eq!(
+            error.to_string(),
+            "Data type conversion failed from String to Integer: Invalid format"
+        );
     }
 
     #[test]
@@ -442,7 +494,7 @@ invalid yaml content:
             field: "bootstrap_servers".to_string(),
         };
         let outer_error = StreamIngestError::Config(inner_error);
-        
+
         let error_string = outer_error.to_string();
         assert!(error_string.contains("Configuration error"));
         assert!(error_string.contains("Missing required field: bootstrap_servers"));
@@ -451,59 +503,123 @@ invalid yaml content:
     #[test]
     fn test_all_error_variants_coverage() {
         let _config_errors = vec![
-            ConfigError::Invalid { message: "test".to_string() },
-            ConfigError::MissingField { field: "test".to_string() },
-            ConfigError::ValidationFailed { reason: "test".to_string() },
-            ConfigError::LoadFailed { 
-                source: "test".to_string(), 
-                error: Box::new(std::io::Error::new(std::io::ErrorKind::Other, "test error"))
+            ConfigError::Invalid {
+                message: "test".to_string(),
+            },
+            ConfigError::MissingField {
+                field: "test".to_string(),
+            },
+            ConfigError::ValidationFailed {
+                reason: "test".to_string(),
+            },
+            ConfigError::LoadFailed {
+                source: "test".to_string(),
+                error: Box::new(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
             },
         ];
 
         let _kafka_errors = vec![
-            KafkaError::ConsumerCreation { reason: "test".to_string() },
-            KafkaError::Subscription { topic: "test".to_string(), reason: "test".to_string() },
-            KafkaError::Consumption { reason: "test".to_string() },
-            KafkaError::OffsetCommit { reason: "test".to_string() },
-            KafkaError::MessageParsing { reason: "test".to_string() },
-            KafkaError::HealthCheck { reason: "test".to_string() },
+            KafkaError::ConsumerCreation {
+                reason: "test".to_string(),
+            },
+            KafkaError::Subscription {
+                topic: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            KafkaError::Consumption {
+                reason: "test".to_string(),
+            },
+            KafkaError::OffsetCommit {
+                reason: "test".to_string(),
+            },
+            KafkaError::MessageParsing {
+                reason: "test".to_string(),
+            },
+            KafkaError::HealthCheck {
+                reason: "test".to_string(),
+            },
         ];
 
         let _delta_errors = vec![
-            DeltaError::TableCreation { reason: "test".to_string() },
-            DeltaError::Write { reason: "test".to_string() },
-            DeltaError::SchemaConversion { reason: "test".to_string() },
-            DeltaError::TableLoad { path: "test".to_string(), reason: "test".to_string() },
-            DeltaError::Optimization { reason: "test".to_string() },
-            DeltaError::Vacuum { reason: "test".to_string() },
+            DeltaError::TableCreation {
+                reason: "test".to_string(),
+            },
+            DeltaError::Write {
+                reason: "test".to_string(),
+            },
+            DeltaError::SchemaConversion {
+                reason: "test".to_string(),
+            },
+            DeltaError::TableLoad {
+                path: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            DeltaError::Optimization {
+                reason: "test".to_string(),
+            },
+            DeltaError::Vacuum {
+                reason: "test".to_string(),
+            },
         ];
 
         let _s3_errors = vec![
-            S3Error::ClientCreation { reason: "test".to_string() },
-            S3Error::BucketAccess { bucket: "test".to_string(), reason: "test".to_string() },
-            S3Error::ListObjects { bucket: "test".to_string(), reason: "test".to_string() },
-            S3Error::Upload { bucket: "test".to_string(), key: "test".to_string(), reason: "test".to_string() },
-            S3Error::Download { bucket: "test".to_string(), key: "test".to_string(), reason: "test".to_string() },
-            S3Error::Delete { bucket: "test".to_string(), key: "test".to_string(), reason: "test".to_string() },
-            S3Error::HealthCheck { reason: "test".to_string() },
+            S3Error::ClientCreation {
+                reason: "test".to_string(),
+            },
+            S3Error::BucketAccess {
+                bucket: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            S3Error::ListObjects {
+                bucket: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            S3Error::Upload {
+                bucket: "test".to_string(),
+                key: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            S3Error::Download {
+                bucket: "test".to_string(),
+                key: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            S3Error::Delete {
+                bucket: "test".to_string(),
+                key: "test".to_string(),
+                reason: "test".to_string(),
+            },
+            S3Error::HealthCheck {
+                reason: "test".to_string(),
+            },
         ];
 
         let _lambda_errors = vec![
-            LambdaError::Initialization { reason: "test".to_string() },
-            LambdaError::Invocation { reason: "test".to_string() },
+            LambdaError::Initialization {
+                reason: "test".to_string(),
+            },
+            LambdaError::Invocation {
+                reason: "test".to_string(),
+            },
             LambdaError::Timeout,
             LambdaError::MemoryLimit,
             LambdaError::ColdStart,
         ];
 
         let _serialization_errors = vec![
-            SerializationError::Json { reason: "test".to_string() },
-            SerializationError::Yaml { reason: "test".to_string() },
-            SerializationError::Arrow { reason: "test".to_string() },
-            SerializationError::TypeConversion { 
-                from_type: "test".to_string(), 
-                to_type: "test".to_string(), 
-                reason: "test".to_string() 
+            SerializationError::Json {
+                reason: "test".to_string(),
+            },
+            SerializationError::Yaml {
+                reason: "test".to_string(),
+            },
+            SerializationError::Arrow {
+                reason: "test".to_string(),
+            },
+            SerializationError::TypeConversion {
+                from_type: "test".to_string(),
+                to_type: "test".to_string(),
+                reason: "test".to_string(),
             },
         ];
 

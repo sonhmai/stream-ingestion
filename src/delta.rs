@@ -1,229 +1,245 @@
-use anyhow::{Context, Result};
-use arrow::array::{
-    ArrayRef, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array, Int64Array,
-    StringArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
-};
-use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
-use deltalake::operations::create::CreateBuilder;
-use deltalake::operations::write::{WriteBuilder, WriteMode as DeltaWriteMode};
-use deltalake::protocol::SaveMode;
-use deltalake::{DeltaOps, DeltaTable, DeltaTableBuilder};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use anyhow::{Context, Result, anyhow};
+use arrow::{
+    array::{
+        ArrayRef, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array, Int64Array,
+        StringArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
+    },
+    datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema, TimeUnit},
+    record_batch::RecordBatch,
+};
+use deltalake::{
+    DeltaTable, DeltaTableBuilder,
+    kernel::{DataType as DeltaDataType, PrimitiveType, StructField},
+    operations::{DeltaOps, create::CreateBuilder},
+    protocol::SaveMode,
+};
+use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::config::{DataType, DeltaConfig, SchemaField, WriteMode};
-use crate::kafka::KafkaMessage;
+use crate::{
+    config::{DataType, DeltaConfig, SchemaField, WriteMode},
+    kafka::KafkaMessage,
+};
 
 pub struct DeltaWriter {
     config: DeltaConfig,
     table_uri: String,
-    schema: Arc<Schema>,
+    schema: Arc<ArrowSchema>,
 }
 
 impl DeltaWriter {
     pub fn new(config: DeltaConfig, table_uri: String) -> Result<Self> {
-        let schema = Self::build_arrow_schema(&config.schema)?;
-        
+        let arrow_schema = Self::build_arrow_schema(&config.schema)?;
         Ok(Self {
             config,
             table_uri,
-            schema: Arc::new(schema),
+            schema: Arc::new(arrow_schema),
         })
     }
 
+    /* ---------- table helpers ---------- */
     pub async fn ensure_table_exists(&self) -> Result<DeltaTable> {
         match DeltaTableBuilder::from_uri(&self.table_uri).load().await {
             Ok(table) => {
-                info!("Delta table exists at: {}", self.table_uri);
+                debug!("Delta table already exists: {}", self.table_uri);
                 Ok(table)
             }
-            Err(_) => {
-                info!("Creating new Delta table at: {}", self.table_uri);
+            Err(err) => {
+                info!("Creating Delta table at {} ({err})", self.table_uri);
                 self.create_table().await
             }
         }
     }
 
     async fn create_table(&self) -> Result<DeltaTable> {
+        // Convert Arrow → Delta schema
+        let delta_fields: Vec<StructField> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| {
+                let dt = self
+                    .arrow_to_delta_type(f.data_type())
+                    .with_context(|| format!("while converting column '{}'", f.name()))?;
+                Ok(StructField::new(f.name().clone(), dt, f.is_nullable()))
+            })
+            .collect::<Result<_>>()?;
+
         let mut builder = CreateBuilder::new()
             .with_location(&self.table_uri)
             .with_table_name(&self.config.table_name)
-            .with_columns(
-                self.schema
-                    .fields()
-                    .iter()
-                    .map(|f| {
-                        deltalake::kernel::StructField::new(
-                            f.name().clone(),
-                            self.arrow_to_delta_type(f.data_type()).unwrap(),
-                            f.is_nullable(),
-                        )
-                    })
-                    .collect(),
-            );
+            .with_columns(delta_fields);
 
-        if let Some(partition_cols) = &self.config.partition_columns {
-            builder = builder.with_partition_columns(partition_cols.clone());
+        if let Some(partitions) = &self.config.partition_columns {
+            if !partitions.is_empty() {
+                builder = builder.with_partition_columns(partitions.clone());
+            }
         }
 
-        let table = builder
+        builder
             .await
-            .context("Failed to create Delta table")?;
-
-        info!("Successfully created Delta table: {}", self.config.table_name);
-        Ok(table)
+            .context("failed to create Delta table")
+            .map(|tbl| {
+                info!("Delta table created: {}", self.config.table_name);
+                tbl
+            })
     }
 
+    /* ---------- write path ---------- */
     pub async fn write_batch(&self, messages: Vec<KafkaMessage>) -> Result<()> {
         if messages.is_empty() {
+            debug!("Skipping write – empty batch");
             return Ok(());
         }
 
-        let batch_data = self.convert_messages_to_records(messages)?;
-        let record_batch = RecordBatch::try_new(self.schema.clone(), batch_data)
-            .context("Failed to create record batch")?;
+        let arrays = self.convert_messages_to_arrays(messages)?;
+        let record_batch =
+            RecordBatch::try_new(self.schema.clone(), arrays).context("building RecordBatch")?;
 
         let table = self.ensure_table_exists().await?;
-        
-        let write_mode = match self.config.write_mode {
-            WriteMode::Append => DeltaWriteMode::Append,
-            WriteMode::Overwrite => DeltaWriteMode::Overwrite,
-            WriteMode::ErrorIfExists => DeltaWriteMode::ErrorIfExists,
-            WriteMode::Ignore => DeltaWriteMode::Ignore,
+
+        // Map user config → Delta `SaveMode`
+        let save_mode = match self.config.write_mode {
+            WriteMode::Append => SaveMode::Append,
+            WriteMode::Overwrite => SaveMode::Overwrite,
+            WriteMode::ErrorIfExists => SaveMode::ErrorIfExists,
+            WriteMode::Ignore => SaveMode::Ignore,
         };
 
-        let mut write_builder = WriteBuilder::new()
-            .with_input_batches(vec![record_batch])
-            .with_save_mode(SaveMode::Append);
+        let mut writer = DeltaOps(table)
+            .write(vec![record_batch])
+            .with_save_mode(save_mode);
 
-        if let Some(partition_cols) = &self.config.partition_columns {
-            write_builder = write_builder.with_partition_columns(partition_cols.clone());
+        if let Some(partitions) = &self.config.partition_columns {
+            if !partitions.is_empty() {
+                writer = writer.with_partition_columns(partitions.clone());
+            }
         }
 
-        let _table = DeltaOps(table)
-            .write(vec![record_batch])
-            .with_save_mode(SaveMode::Append)
+        writer
             .await
-            .context("Failed to write batch to Delta table")?;
+            .context("writing batch to Delta table")
+            .map(|_| info!("Batch successfully written"))
+    }
 
-        info!("Successfully wrote batch to Delta table");
+    pub async fn optimize_table(&self) -> Result<()> {
+        let table = self.ensure_table_exists().await?;
+        DeltaOps(table).optimize().await.context("optimize")?;
+        info!("Optimize finished");
         Ok(())
     }
 
-    fn convert_messages_to_records(&self, messages: Vec<KafkaMessage>) -> Result<Vec<ArrayRef>> {
-        let mut columns: HashMap<String, Vec<Option<Value>>> = HashMap::new();
+    pub async fn vacuum_table(&self, retention_hours: Option<u64>) -> Result<()> {
+        const DEFAULT_RETENTION_HOURS: u64 = 168;
+        let table = self.ensure_table_exists().await?;
+        let retention_hours = retention_hours.unwrap_or(DEFAULT_RETENTION_HOURS);
 
-        for field in self.schema.fields() {
-            columns.insert(field.name().clone(), Vec::new());
-        }
-
-        for message in &messages {
-            let json_value: Value = if let Some(payload) = &message.payload {
-                serde_json::from_str(payload).unwrap_or(Value::Null)
-            } else {
-                Value::Null
-            };
-
-            for field in self.schema.fields() {
-                let column_data = columns.get_mut(field.name()).unwrap();
-                
-                let value = if field.name() == "_kafka_topic" {
-                    Some(Value::String(message.topic.clone()))
-                } else if field.name() == "_kafka_partition" {
-                    Some(Value::Number(serde_json::Number::from(message.partition)))
-                } else if field.name() == "_kafka_offset" {
-                    Some(Value::Number(serde_json::Number::from(message.offset)))
-                } else if field.name() == "_kafka_timestamp" {
-                    message.timestamp.map(|ts| Value::Number(serde_json::Number::from(ts)))
-                } else if field.name() == "_kafka_key" {
-                    message.key.as_ref().map(|k| Value::String(k.clone()))
-                } else {
-                    json_value.get(field.name()).cloned()
-                };
-
-                column_data.push(value);
-            }
-        }
-
-        let mut arrays: Vec<ArrayRef> = Vec::new();
-
-        for field in self.schema.fields() {
-            let column_data = columns.get(field.name()).unwrap();
-            let array = self.create_array_from_values(field, column_data)?;
-            arrays.push(array);
-        }
-
-        Ok(arrays)
+        DeltaOps(table)
+            .vacuum()
+            .with_retention_period(chrono::Duration::hours(retention_hours as i64))
+            .await
+            .context("vacuum")?;
+        info!("Vacuum finished");
+        Ok(())
     }
 
-    fn create_array_from_values(&self, field: &Field, values: &[Option<Value>]) -> Result<ArrayRef> {
-        match field.data_type() {
-            ArrowDataType::Boolean => {
-                let array: BooleanArray = values
-                    .iter()
-                    .map(|v| v.as_ref().and_then(|val| val.as_bool()))
-                    .collect();
-                Ok(Arc::new(array))
+    /* ---------- data conversion ---------- */
+    fn convert_messages_to_arrays(&self, messages: Vec<KafkaMessage>) -> Result<Vec<ArrayRef>> {
+        // Pre-allocate column buffers
+        let mut cols: HashMap<&str, Vec<Option<Value>>> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| (f.name().as_str(), Vec::new()))
+            .collect();
+
+        for msg in &messages {
+            // User payload
+            let json = msg
+                .payload
+                .as_deref()
+                .map(serde_json::from_str::<Value>)
+                .transpose()
+                .unwrap_or(None)
+                .unwrap_or(Value::Null);
+
+            for f in self.schema.fields() {
+                let entry = cols.get_mut(f.name().as_str()).expect("col exists");
+
+                let value = match f.name().as_str() {
+                    "_kafka_topic" => Some(Value::String(msg.topic.clone())),
+                    "_kafka_partition" => Some(Value::Number(msg.partition.into())),
+                    "_kafka_offset" => Some(Value::Number(msg.offset.into())),
+                    "_kafka_timestamp" => msg.timestamp.map(|ts| Value::Number(ts.into())),
+                    "_kafka_key" => msg.key.as_ref().map(|k| Value::String(k.clone())),
+                    other => json.get(other).cloned(),
+                };
+
+                entry.push(value);
             }
-            ArrowDataType::Int32 => {
-                let array: Int32Array = values
+        }
+
+        // Build Arrow arrays in the table schema order
+        self.schema
+            .fields()
+            .iter()
+            .map(|f| {
+                let data = cols.get(f.name().as_str()).unwrap();
+                self.array_from_json_values(f, data)
+                    .with_context(|| format!("building array '{}'", f.name()))
+            })
+            .collect()
+    }
+
+    fn array_from_json_values(&self, field: &Field, values: &[Option<Value>]) -> Result<ArrayRef> {
+        Ok(match field.data_type() {
+            ArrowDataType::Boolean => Arc::new(
+                values
                     .iter()
-                    .map(|v| {
-                        v.as_ref().and_then(|val| {
-                            val.as_i64().map(|i| i as i32)
-                        })
-                    })
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::Int64 => {
-                let array: Int64Array = values
+                    .map(|v| v.as_ref().and_then(Value::as_bool))
+                    .collect::<BooleanArray>(),
+            ),
+            ArrowDataType::Int32 => Arc::new(
+                values
                     .iter()
-                    .map(|v| v.as_ref().and_then(|val| val.as_i64()))
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::UInt32 => {
-                let array: UInt32Array = values
+                    .map(|v| v.as_ref().and_then(Value::as_i64).map(|i| i as i32))
+                    .collect::<Int32Array>(),
+            ),
+            ArrowDataType::Int64 => Arc::new(
+                values
                     .iter()
-                    .map(|v| {
-                        v.as_ref().and_then(|val| {
-                            val.as_u64().map(|u| u as u32)
-                        })
-                    })
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::UInt64 => {
-                let array: UInt64Array = values
+                    .map(|v| v.as_ref().and_then(Value::as_i64))
+                    .collect::<Int64Array>(),
+            ),
+            ArrowDataType::UInt32 => Arc::new(
+                values
                     .iter()
-                    .map(|v| v.as_ref().and_then(|val| val.as_u64()))
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::Float32 => {
-                let array: Float32Array = values
+                    .map(|v| v.as_ref().and_then(Value::as_u64).map(|u| u as u32))
+                    .collect::<UInt32Array>(),
+            ),
+            ArrowDataType::UInt64 => Arc::new(
+                values
                     .iter()
-                    .map(|v| {
-                        v.as_ref().and_then(|val| {
-                            val.as_f64().map(|f| f as f32)
-                        })
-                    })
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::Float64 => {
-                let array: Float64Array = values
+                    .map(|v| v.as_ref().and_then(Value::as_u64))
+                    .collect::<UInt64Array>(),
+            ),
+            ArrowDataType::Float32 => Arc::new(
+                values
                     .iter()
-                    .map(|v| v.as_ref().and_then(|val| val.as_f64()))
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::Utf8 => {
-                let array: StringArray = values
+                    .map(|v| v.as_ref().and_then(Value::as_f64).map(|f| f as f32))
+                    .collect::<Float32Array>(),
+            ),
+            ArrowDataType::Float64 => Arc::new(
+                values
+                    .iter()
+                    .map(|v| v.as_ref().and_then(Value::as_f64))
+                    .collect::<Float64Array>(),
+            ),
+            ArrowDataType::Utf8 => Arc::new(
+                values
                     .iter()
                     .map(|v| {
                         v.as_ref().map(|val| match val {
@@ -231,137 +247,108 @@ impl DeltaWriter {
                             _ => val.to_string(),
                         })
                     })
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::Timestamp(TimeUnit::Millisecond, _) => {
-                let array: TimestampMillisecondArray = values
+                    .collect::<StringArray>(),
+            ),
+            ArrowDataType::Timestamp(TimeUnit::Millisecond, _) => Arc::new(
+                values
                     .iter()
-                    .map(|v| v.as_ref().and_then(|val| val.as_i64()))
-                    .collect();
-                Ok(Arc::new(array))
-            }
-            ArrowDataType::Date32 => {
-                let array: Date32Array = values
+                    .map(|v| v.as_ref().and_then(Value::as_i64))
+                    .collect::<TimestampMillisecondArray>(),
+            ),
+            ArrowDataType::Date32 => Arc::new(
+                values
                     .iter()
-                    .map(|v| {
-                        v.as_ref().and_then(|val| {
-                            val.as_i64().map(|i| i as i32)
-                        })
-                    })
-                    .collect();
-                Ok(Arc::new(array))
+                    .map(|v| v.as_ref().and_then(Value::as_i64).map(|i| i as i32))
+                    .collect::<Date32Array>(),
+            ),
+            other => {
+                warn!("Unsupported Arrow type {:?} – storing as Utf8", other);
+                Arc::new(
+                    values
+                        .iter()
+                        .map(|v| v.as_ref().map(|val| val.to_string()))
+                        .collect::<StringArray>(),
+                )
             }
-            _ => {
-                warn!("Unsupported data type: {:?}, converting to string", field.data_type());
-                let array: StringArray = values
-                    .iter()
-                    .map(|v| {
-                        v.as_ref().map(|val| val.to_string())
-                    })
-                    .collect();
-                Ok(Arc::new(array))
-            }
-        }
+        })
     }
 
-    fn build_arrow_schema(schema_fields: &[SchemaField]) -> Result<Schema> {
-        let mut fields = Vec::new();
+    /* ---------- schema helpers ---------- */
+    fn build_arrow_schema(schema_fields: &[SchemaField]) -> Result<ArrowSchema> {
+        let mut fields = vec![
+            Field::new("_kafka_topic", ArrowDataType::Utf8, false),
+            Field::new("_kafka_partition", ArrowDataType::Int32, false),
+            Field::new("_kafka_offset", ArrowDataType::Int64, false),
+            Field::new(
+                "_kafka_timestamp",
+                ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ),
+            Field::new("_kafka_key", ArrowDataType::Utf8, true),
+        ];
 
-        fields.push(Field::new("_kafka_topic", ArrowDataType::Utf8, false));
-        fields.push(Field::new("_kafka_partition", ArrowDataType::Int32, false));
-        fields.push(Field::new("_kafka_offset", ArrowDataType::Int64, false));
-        fields.push(Field::new("_kafka_timestamp", ArrowDataType::Timestamp(TimeUnit::Millisecond, None), true));
-        fields.push(Field::new("_kafka_key", ArrowDataType::Utf8, true));
-
-        for schema_field in schema_fields {
-            let arrow_type = Self::convert_data_type(&schema_field.data_type)?;
-            fields.push(Field::new(&schema_field.name, arrow_type, schema_field.nullable));
+        for sf in schema_fields {
+            let dt = Self::data_type_to_arrow(&sf.data_type)
+                .with_context(|| format!("column '{}'", sf.name))?;
+            fields.push(Field::new(&sf.name, dt, sf.nullable));
         }
 
-        Ok(Schema::new(fields))
+        Ok(ArrowSchema::new(fields))
     }
 
-    fn convert_data_type(data_type: &DataType) -> Result<ArrowDataType> {
-        let arrow_type = match data_type {
-            DataType::Boolean => ArrowDataType::Boolean,
-            DataType::Int8 => ArrowDataType::Int8,
-            DataType::Int16 => ArrowDataType::Int16,
-            DataType::Int32 => ArrowDataType::Int32,
-            DataType::Int64 => ArrowDataType::Int64,
-            DataType::UInt8 => ArrowDataType::UInt8,
-            DataType::UInt16 => ArrowDataType::UInt16,
-            DataType::UInt32 => ArrowDataType::UInt32,
-            DataType::UInt64 => ArrowDataType::UInt64,
-            DataType::Float32 => ArrowDataType::Float32,
-            DataType::Float64 => ArrowDataType::Float64,
-            DataType::Utf8 => ArrowDataType::Utf8,
-            DataType::Binary => ArrowDataType::Binary,
-            DataType::Date32 => ArrowDataType::Date32,
-            DataType::Date64 => ArrowDataType::Date64,
-            DataType::TimestampSecond => ArrowDataType::Timestamp(TimeUnit::Second, None),
-            DataType::TimestampMillisecond => ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
-            DataType::TimestampMicrosecond => ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
-            DataType::TimestampNanosecond => ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
-            DataType::Decimal128 { precision, scale } => {
-                ArrowDataType::Decimal128(*precision, *scale)
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unsupported data type: {:?}", data_type));
-            }
-        };
-        Ok(arrow_type)
+    fn data_type_to_arrow(dt: &DataType) -> Result<ArrowDataType> {
+        use DataType::*;
+        Ok(match dt {
+            Boolean => ArrowDataType::Boolean,
+            Int8 => ArrowDataType::Int8,
+            Int16 => ArrowDataType::Int16,
+            Int32 => ArrowDataType::Int32,
+            Int64 => ArrowDataType::Int64,
+            UInt8 => ArrowDataType::UInt8,
+            UInt16 => ArrowDataType::UInt16,
+            UInt32 => ArrowDataType::UInt32,
+            UInt64 => ArrowDataType::UInt64,
+            Float32 => ArrowDataType::Float32,
+            Float64 => ArrowDataType::Float64,
+            Utf8 => ArrowDataType::Utf8,
+            Binary => ArrowDataType::Binary,
+            Date32 => ArrowDataType::Date32,
+            Date64 => ArrowDataType::Date64,
+            TimestampSecond => ArrowDataType::Timestamp(TimeUnit::Second, None),
+            TimestampMillisecond => ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
+            TimestampMicrosecond => ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
+            TimestampNanosecond => ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+            Decimal128 { precision, scale } => ArrowDataType::Decimal128(*precision, *scale),
+            unsupported => return Err(anyhow!("unsupported data type: {unsupported:?}")),
+        })
     }
 
-    fn arrow_to_delta_type(&self, arrow_type: &ArrowDataType) -> Result<deltalake::kernel::DataType> {
-        use deltalake::kernel::DataType as DeltaDataType;
-        use deltalake::kernel::PrimitiveType;
-
-        let delta_type = match arrow_type {
-            ArrowDataType::Boolean => DeltaDataType::Primitive(PrimitiveType::Boolean),
-            ArrowDataType::Int8 => DeltaDataType::Primitive(PrimitiveType::Byte),
-            ArrowDataType::Int16 => DeltaDataType::Primitive(PrimitiveType::Short),
-            ArrowDataType::Int32 => DeltaDataType::Primitive(PrimitiveType::Integer),
-            ArrowDataType::Int64 => DeltaDataType::Primitive(PrimitiveType::Long),
-            ArrowDataType::Float32 => DeltaDataType::Primitive(PrimitiveType::Float),
-            ArrowDataType::Float64 => DeltaDataType::Primitive(PrimitiveType::Double),
-            ArrowDataType::Utf8 => DeltaDataType::Primitive(PrimitiveType::String),
-            ArrowDataType::Binary => DeltaDataType::Primitive(PrimitiveType::Binary),
-            ArrowDataType::Date32 => DeltaDataType::Primitive(PrimitiveType::Date),
-            ArrowDataType::Timestamp(_, _) => DeltaDataType::Primitive(PrimitiveType::Timestamp),
-            ArrowDataType::Decimal128(precision, scale) => {
-                DeltaDataType::decimal(*precision, *scale)?
+    fn arrow_to_delta_type(&self, arrow: &ArrowDataType) -> Result<DeltaDataType> {
+        use PrimitiveType::*;
+        Ok(match arrow {
+            ArrowDataType::Boolean => DeltaDataType::Primitive(Boolean),
+            ArrowDataType::Int8 => DeltaDataType::Primitive(Byte),
+            ArrowDataType::Int16 => DeltaDataType::Primitive(Short),
+            ArrowDataType::Int32 => DeltaDataType::Primitive(Integer),
+            ArrowDataType::Int64 => DeltaDataType::Primitive(Long),
+            ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64 => {
+                return Err(anyhow!("Delta spec has no unsigned integer types"));
             }
-            _ => {
-                return Err(anyhow::anyhow!("Unsupported Arrow type for Delta: {:?}", arrow_type));
+            ArrowDataType::Float32 => DeltaDataType::Primitive(Float),
+            ArrowDataType::Float64 => DeltaDataType::Primitive(Double),
+            ArrowDataType::Utf8 => DeltaDataType::Primitive(String),
+            ArrowDataType::Binary => DeltaDataType::Primitive(Binary),
+            ArrowDataType::Date32 => DeltaDataType::Primitive(Date),
+            ArrowDataType::Timestamp(_, _) => DeltaDataType::Primitive(Timestamp),
+            ArrowDataType::Decimal128(p, s) => DeltaDataType::decimal(*p, *s as u8)?,
+            unsupported => {
+                return Err(anyhow!(
+                    "Arrow type {unsupported:?} is not yet supported in Delta"
+                ));
             }
-        };
-        Ok(delta_type)
-    }
-
-    pub async fn optimize_table(&self) -> Result<()> {
-        let table = self.ensure_table_exists().await?;
-        
-        let _optimized_table = DeltaOps(table)
-            .optimize()
-            .await
-            .context("Failed to optimize Delta table")?;
-
-        info!("Successfully optimized Delta table");
-        Ok(())
-    }
-
-    pub async fn vacuum_table(&self, retention_hours: Option<u64>) -> Result<()> {
-        let table = self.ensure_table_exists().await?;
-        let retention = retention_hours.unwrap_or(168); // Default 7 days
-
-        let _vacuumed_table = DeltaOps(table)
-            .vacuum()
-            .with_retention_period(std::time::Duration::from_secs(retention * 3600))
-            .await
-            .context("Failed to vacuum Delta table")?;
-
-        info!("Successfully vacuumed Delta table with retention {} hours", retention);
-        Ok(())
+        })
     }
 }

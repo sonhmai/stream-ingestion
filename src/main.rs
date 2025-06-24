@@ -1,23 +1,13 @@
-mod config;
-mod kafka;
-// mod delta;  // Temporarily disabled for testing
-mod s3;
-mod errors;
-
 use anyhow::Result;
-use lambda_runtime::{service_fn, Error, LambdaEvent};
+use lambda_runtime::{Error, LambdaEvent, service_fn};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::{Duration, Instant};
+use stream_ingest::delta::DeltaWriter;
+use stream_ingest::{IngestConfig, KafkaConsumerClient, S3Client, StreamIngestError, errors};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-use crate::config::IngestConfig;
-// use crate::delta::DeltaWriter;  // Temporarily disabled for testing
-use crate::errors::{Result as StreamResult, StreamIngestError};
-use crate::kafka::KafkaConsumerClient;
-use crate::s3::S3Client;
 
 #[derive(Debug, Deserialize)]
 struct LambdaRequest {
@@ -39,7 +29,7 @@ struct LambdaResponse {
     pub metrics: IngestMetrics,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 struct IngestMetrics {
     pub total_messages: usize,
     pub successful_messages: usize,
@@ -48,71 +38,79 @@ struct IngestMetrics {
     pub avg_batch_size: f64,
     pub delta_writes: usize,
     pub kafka_commits: usize,
+    pub batches_processed: usize,
 }
 
 struct StreamIngestProcessor {
     config: IngestConfig,
     kafka_client: KafkaConsumerClient,
-    // delta_writer: DeltaWriter,  // Temporarily disabled for testing
+    delta_writer: DeltaWriter,
     s3_client: S3Client,
     metrics: IngestMetrics,
 }
 
 impl StreamIngestProcessor {
-    pub async fn new(config: IngestConfig) -> StreamResult<Self> {
-        config.validate()
-            .map_err(|e| StreamIngestError::Config(crate::errors::ConfigError::ValidationFailed { 
-                reason: e.to_string() 
-            }))?;
+    pub async fn new(config: IngestConfig) -> errors::Result<Self> {
+        config.validate().map_err(|e| {
+            StreamIngestError::Config(errors::ConfigError::ValidationFailed {
+                reason: e.to_string(),
+            })
+        })?;
 
-        let kafka_client = KafkaConsumerClient::new(&config)
-            .map_err(|e| StreamIngestError::Kafka(crate::errors::KafkaError::ConsumerCreation { 
-                reason: e.to_string() 
-            }))?;
+        let kafka_client = KafkaConsumerClient::new(&config).map_err(|e| {
+            StreamIngestError::Kafka(errors::KafkaError::ConsumerCreation {
+                reason: e.to_string(),
+            })
+        })?;
 
-        let s3_client = S3Client::new(config.s3.clone()).await
-            .map_err(|e| StreamIngestError::S3(crate::errors::S3Error::ClientCreation { 
-                reason: e.to_string() 
-            }))?;
+        let s3_client = S3Client::new(config.s3.clone()).await.map_err(|e| {
+            StreamIngestError::S3(errors::S3Error::ClientCreation {
+                reason: e.to_string(),
+            })
+        })?;
 
-        // let table_uri = s3_client.get_table_uri(&config.delta.table_name);
-        // let delta_writer = DeltaWriter::new(config.delta.clone(), table_uri)
-        //     .map_err(|e| StreamIngestError::Delta(crate::errors::DeltaError::TableCreation { 
-        //         reason: e.to_string() 
-        //     }))?;
+        let table_uri = s3_client.get_table_uri(&config.delta.table_name);
+        let delta_writer = DeltaWriter::new(config.delta.clone(), table_uri).map_err(|e| {
+            StreamIngestError::Delta(errors::DeltaError::TableCreation {
+                reason: e.to_string(),
+            })
+        })?;
 
         Ok(Self {
             config,
             kafka_client,
-            // delta_writer,  // Temporarily disabled for testing
+            delta_writer,
             s3_client,
             metrics: IngestMetrics::default(),
         })
     }
 
-    pub async fn run(&mut self, max_runtime: Duration, dry_run: bool) -> StreamResult<()> {
+    pub async fn run(&mut self, max_runtime: Duration, dry_run: bool) -> errors::Result<()> {
         let start_time = Instant::now();
-        
+
         info!("Starting stream ingestion process");
         info!("Max runtime: {:?}, Dry run: {}", max_runtime, dry_run);
 
-        self.kafka_client.subscribe().await
-            .map_err(|e| StreamIngestError::Kafka(crate::errors::KafkaError::Subscription { 
+        self.kafka_client.subscribe().await.map_err(|e| {
+            StreamIngestError::Kafka(crate::errors::KafkaError::Subscription {
                 topic: self.config.kafka.topic.clone(),
-                reason: e.to_string() 
-            }))?;
+                reason: e.to_string(),
+            })
+        })?;
 
         if !dry_run {
-            self.s3_client.ensure_bucket_exists().await
-                .map_err(|e| StreamIngestError::S3(crate::errors::S3Error::BucketAccess { 
+            self.s3_client.ensure_bucket_exists().await.map_err(|e| {
+                StreamIngestError::S3(crate::errors::S3Error::BucketAccess {
                     bucket: self.config.s3.bucket.clone(),
-                    reason: e.to_string() 
-                }))?;
+                    reason: e.to_string(),
+                })
+            })?;
 
-            // self.delta_writer.ensure_table_exists().await
-            //     .map_err(|e| StreamIngestError::Delta(crate::errors::DeltaError::TableCreation { 
-            //         reason: e.to_string() 
-            //     }))?;
+            self.delta_writer.ensure_table_exists().await.map_err(|e| {
+                StreamIngestError::Delta(crate::errors::DeltaError::TableCreation {
+                    reason: e.to_string(),
+                })
+            })?;
         }
 
         let mut retry_count = 0;
@@ -130,13 +128,15 @@ impl StreamIngestProcessor {
                 }
                 Err(e) => {
                     error!("Batch processing failed: {}", e);
-                    
+
                     if e.is_retryable() && retry_count < max_retries {
                         retry_count += 1;
-                        let delay = Duration::from_millis(
-                            e.get_retry_delay_ms() * retry_count as u64
+                        let delay =
+                            Duration::from_millis(e.get_retry_delay_ms() * retry_count as u64);
+                        warn!(
+                            "Retrying in {:?} (attempt {}/{})",
+                            delay, retry_count, max_retries
                         );
-                        warn!("Retrying in {:?} (attempt {}/{})", delay, retry_count, max_retries);
                         tokio::time::sleep(delay).await;
                         continue;
                     } else {
@@ -153,20 +153,26 @@ impl StreamIngestProcessor {
             }
         }
 
-        info!("Stream ingestion completed. Final metrics: {:?}", self.metrics);
+        info!(
+            "Stream ingestion completed. Final metrics: {:?}",
+            self.metrics
+        );
         Ok(())
     }
 
-    async fn process_batch(&mut self, dry_run: bool) -> StreamResult<usize> {
-        let messages = self.kafka_client
+    async fn process_batch(&mut self, dry_run: bool) -> errors::Result<usize> {
+        let messages = self
+            .kafka_client
             .consume_batch(
                 self.config.processing.batch_size,
                 self.config.processing.batch_timeout_ms,
             )
             .await
-            .map_err(|e| StreamIngestError::Kafka(crate::errors::KafkaError::Consumption { 
-                reason: e.to_string() 
-            }))?;
+            .map_err(|e| {
+                StreamIngestError::Kafka(crate::errors::KafkaError::Consumption {
+                    reason: e.to_string(),
+                })
+            })?;
 
         if messages.is_empty() {
             return Ok(0);
@@ -181,31 +187,33 @@ impl StreamIngestProcessor {
             return Ok(batch_size);
         }
 
-        // Temporarily disabled delta writing for testing
-        // match self.delta_writer.write_batch(messages.clone()).await {
-        //     Ok(_) => {
+        match self.delta_writer.write_batch(messages.clone()).await {
+            Ok(_) => {
                 self.metrics.successful_messages += batch_size;
                 self.metrics.delta_writes += 1;
-                
-                self.kafka_client.commit_offsets(&messages).await
-                    .map_err(|e| StreamIngestError::Kafka(crate::errors::KafkaError::OffsetCommit { 
-                        reason: e.to_string() 
-                    }))?;
-                
+
+                self.kafka_client
+                    .commit_offsets(&messages)
+                    .await
+                    .map_err(|e| {
+                        StreamIngestError::Kafka(crate::errors::KafkaError::OffsetCommit {
+                            reason: e.to_string(),
+                        })
+                    })?;
+
                 self.metrics.kafka_commits += 1;
                 info!("Successfully processed batch of {} messages", batch_size);
-        //     }
-        //     Err(e) => {
-        //         error!("Failed to write batch to Delta table: {}", e);
-        //         self.metrics.failed_messages += batch_size;
-        //         return Err(StreamIngestError::Delta(crate::errors::DeltaError::Write { 
-        //             reason: e.to_string() 
-        //         }));
-        //     }
-        // }
-
+            }
+            Err(e) => {
+                error!("Failed to write batch to Delta table: {}", e);
+                self.metrics.failed_messages += batch_size;
+                return Err(StreamIngestError::Delta(crate::errors::DeltaError::Write {
+                    reason: e.to_string(),
+                }));
+            }
+        }
         self.metrics.batches_processed += 1;
-        self.metrics.avg_batch_size = 
+        self.metrics.avg_batch_size =
             self.metrics.total_messages as f64 / self.metrics.batches_processed as f64;
 
         Ok(batch_size)
@@ -312,17 +320,21 @@ async fn main() -> Result<(), Error> {
         lambda_runtime::run(service_fn(lambda_handler)).await
     } else {
         info!("Running in local development mode");
-        
-        let config = load_config(None).await
+
+        let config = load_config(None)
+            .await
             .map_err(|e| format!("Failed to load configuration: {}", e))?;
 
-        let mut processor = StreamIngestProcessor::new(config).await
+        let mut processor = StreamIngestProcessor::new(config)
+            .await
             .map_err(|e| format!("Failed to initialize processor: {}", e))?;
 
         let max_runtime = Duration::from_secs(60); // 1 minute for local testing
         let dry_run = env::var("DRY_RUN").map(|v| v == "true").unwrap_or(false);
 
-        processor.run(max_runtime, dry_run).await
+        processor
+            .run(max_runtime, dry_run)
+            .await
             .map_err(|e| format!("Processing failed: {}", e))?;
 
         info!("Local processing completed successfully");

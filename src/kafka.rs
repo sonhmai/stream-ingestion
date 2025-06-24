@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::message::Message;
+use rdkafka::message::{Headers, Message};
 use rdkafka::{ClientConfig, TopicPartitionList};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{IngestConfig, KafkaConfig};
 
@@ -30,14 +30,21 @@ pub struct KafkaMessage {
 impl KafkaConsumerClient {
     pub fn new(config: &IngestConfig) -> Result<Self> {
         let mut client_config = ClientConfig::new();
-        
+
         client_config
             .set("bootstrap.servers", &config.kafka.bootstrap_servers)
             .set("group.id", &config.kafka.consumer_group)
             .set("enable.partition.eof", "false")
             .set("session.timeout.ms", "6000")
             .set("enable.auto.commit", "false")
-            .set("auto.offset.reset", config.kafka.auto_offset_reset.as_deref().unwrap_or("earliest"));
+            .set(
+                "auto.offset.reset",
+                config
+                    .kafka
+                    .auto_offset_reset
+                    .as_deref()
+                    .unwrap_or("earliest"),
+            );
 
         if let Some(timeout) = config.kafka.session_timeout_ms {
             client_config.set("session.timeout.ms", &timeout.to_string());
@@ -82,12 +89,16 @@ impl KafkaConsumerClient {
         self.consumer
             .subscribe(&topics)
             .context("Failed to subscribe to Kafka topic")?;
-        
+
         info!("Subscribed to Kafka topic: {}", self.config.topic);
         Ok(())
     }
 
-    pub async fn consume_batch(&self, batch_size: usize, timeout_ms: u64) -> Result<Vec<KafkaMessage>> {
+    pub async fn consume_batch(
+        &self,
+        batch_size: usize,
+        timeout_ms: u64,
+    ) -> Result<Vec<KafkaMessage>> {
         let mut messages = Vec::new();
         let batch_timeout = Duration::from_millis(timeout_ms);
         let message_timeout = Duration::from_millis(5000);
@@ -96,20 +107,21 @@ impl KafkaConsumerClient {
 
         while messages.len() < batch_size && start_time.elapsed() < batch_timeout {
             match timeout(message_timeout, self.consumer.recv()).await {
-                Ok(msg_result) => {
-                    match msg_result {
-                        Ok(message) => {
-                            let kafka_msg = self.convert_message(&message)?;
-                            messages.push(kafka_msg);
-                            debug!("Received message from partition {} offset {}", 
-                                   message.partition(), message.offset());
-                        }
-                        Err(e) => {
-                            warn!("Error receiving message: {}", e);
-                            continue;
-                        }
+                Ok(msg_result) => match msg_result {
+                    Ok(message) => {
+                        let kafka_msg = self.convert_message(&message)?;
+                        messages.push(kafka_msg);
+                        debug!(
+                            "Received message from partition {} offset {}",
+                            message.partition(),
+                            message.offset()
+                        );
                     }
-                }
+                    Err(e) => {
+                        warn!("Error receiving message: {}", e);
+                        continue;
+                    }
+                },
                 Err(_) => {
                     debug!("Message receive timeout, continuing...");
                     if messages.is_empty() {
@@ -135,7 +147,7 @@ impl KafkaConsumerClient {
 
         let mut tpl = TopicPartitionList::new();
         let last_message = messages.last().unwrap();
-        
+
         tpl.add_partition_offset(
             &last_message.topic,
             last_message.partition,
@@ -146,17 +158,22 @@ impl KafkaConsumerClient {
             .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
             .context("Failed to commit offsets")?;
 
-        debug!("Committed offset {} for partition {}", 
-               last_message.offset + 1, last_message.partition);
-        
+        debug!(
+            "Committed offset {} for partition {}",
+            last_message.offset + 1,
+            last_message.partition
+        );
+
         Ok(())
     }
 
     fn convert_message(&self, message: &rdkafka::message::BorrowedMessage) -> Result<KafkaMessage> {
-        let key = message.key()
+        let key = message
+            .key()
             .map(|k| String::from_utf8_lossy(k).to_string());
 
-        let payload = message.payload()
+        let payload = message
+            .payload()
             .map(|p| String::from_utf8_lossy(p).to_string());
 
         let mut headers = HashMap::new();
@@ -183,7 +200,8 @@ impl KafkaConsumerClient {
     }
 
     pub async fn health_check(&self) -> Result<()> {
-        let metadata = self.consumer
+        let metadata = self
+            .consumer
             .fetch_metadata(Some(&self.config.topic), Duration::from_secs(10))
             .context("Failed to fetch metadata for health check")?;
 
@@ -193,23 +211,29 @@ impl KafkaConsumerClient {
 
         let topic_metadata = &metadata.topics()[0];
         if topic_metadata.partitions().is_empty() {
-            return Err(anyhow::anyhow!("No partitions found for topic {}", self.config.topic));
+            return Err(anyhow::anyhow!(
+                "No partitions found for topic {}",
+                self.config.topic
+            ));
         }
 
-        info!("Health check passed for topic {} with {} partitions", 
-              self.config.topic, topic_metadata.partitions().len());
-        
+        info!(
+            "Health check passed for topic {} with {} partitions",
+            self.config.topic,
+            topic_metadata.partitions().len()
+        );
+
         Ok(())
     }
 }
 
 pub fn parse_json_message(message: &KafkaMessage) -> Result<Value> {
-    let payload = message.payload
+    let payload = message
+        .payload
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Message payload is empty"))?;
 
-    serde_json::from_str(payload)
-        .context("Failed to parse message payload as JSON")
+    serde_json::from_str(payload).context("Failed to parse message payload as JSON")
 }
 
 pub fn extract_partition_values(
@@ -227,8 +251,7 @@ pub fn extract_partition_values(
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
-            _ => serde_json::to_string(value)
-                .context("Failed to serialize partition value")?,
+            _ => serde_json::to_string(value).context("Failed to serialize partition value")?,
         };
 
         partition_values.insert(column.clone(), string_value);
@@ -240,7 +263,10 @@ pub fn extract_partition_values(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{IngestConfig, KafkaConfig, S3Config, DeltaConfig, ProcessingConfig, WriteMode, SchemaField, DataType};
+    use crate::config::{
+        DataType, DeltaConfig, IngestConfig, KafkaConfig, ProcessingConfig, S3Config, SchemaField,
+        WriteMode,
+    };
 
     fn create_test_config() -> IngestConfig {
         IngestConfig {
@@ -269,14 +295,12 @@ mod tests {
             },
             delta: DeltaConfig {
                 table_name: "test_table".to_string(),
-                schema: vec![
-                    SchemaField {
-                        name: "id".to_string(),
-                        data_type: DataType::Int64,
-                        nullable: false,
-                        metadata: None,
-                    },
-                ],
+                schema: vec![SchemaField {
+                    name: "id".to_string(),
+                    data_type: DataType::Int64,
+                    nullable: false,
+                    metadata: None,
+                }],
                 partition_columns: Some(vec!["date".to_string()]),
                 write_mode: WriteMode::Append,
                 merge_schema: false,
@@ -305,7 +329,7 @@ mod tests {
     #[test]
     fn test_kafka_message_creation() {
         let message = create_test_kafka_message();
-        
+
         assert_eq!(message.topic, "test-topic");
         assert_eq!(message.partition, 0);
         assert_eq!(message.offset, 123);
@@ -319,7 +343,7 @@ mod tests {
     fn test_parse_json_message_success() {
         let message = create_test_kafka_message();
         let parsed = parse_json_message(&message).unwrap();
-        
+
         assert_eq!(parsed["id"], 1);
         assert_eq!(parsed["name"], "test");
         assert_eq!(parsed["date"], "2024-01-01");
@@ -329,7 +353,7 @@ mod tests {
     fn test_parse_json_message_empty_payload() {
         let mut message = create_test_kafka_message();
         message.payload = None;
-        
+
         let result = parse_json_message(&message);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("payload is empty"));
@@ -339,7 +363,7 @@ mod tests {
     fn test_parse_json_message_invalid_json() {
         let mut message = create_test_kafka_message();
         message.payload = Some("invalid json".to_string());
-        
+
         let result = parse_json_message(&message);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Failed to parse"));
@@ -353,10 +377,10 @@ mod tests {
             "date": "2024-01-01",
             "category": "electronics"
         });
-        
+
         let partition_columns = vec!["date".to_string(), "category".to_string()];
         let partition_values = extract_partition_values(&json_value, &partition_columns).unwrap();
-        
+
         assert_eq!(partition_values.len(), 2);
         assert_eq!(partition_values["date"], "2024-01-01");
         assert_eq!(partition_values["category"], "electronics");
@@ -368,12 +392,17 @@ mod tests {
             "id": 1,
             "name": "test"
         });
-        
+
         let partition_columns = vec!["date".to_string()];
         let result = extract_partition_values(&json_value, &partition_columns);
-        
+
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found in message"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not found in message")
+        );
     }
 
     #[test]
@@ -384,16 +413,16 @@ mod tests {
             "bool_field": true,
             "object_field": {"nested": "value"}
         });
-        
+
         let partition_columns = vec![
             "string_field".to_string(),
-            "number_field".to_string(), 
+            "number_field".to_string(),
             "bool_field".to_string(),
-            "object_field".to_string()
+            "object_field".to_string(),
         ];
-        
+
         let partition_values = extract_partition_values(&json_value, &partition_columns).unwrap();
-        
+
         assert_eq!(partition_values["string_field"], "text");
         assert_eq!(partition_values["number_field"], "42");
         assert_eq!(partition_values["bool_field"], "true");
@@ -404,7 +433,7 @@ mod tests {
     fn test_extract_partition_values_empty_columns() {
         let json_value = serde_json::json!({"id": 1});
         let partition_columns: Vec<String> = vec![];
-        
+
         let partition_values = extract_partition_values(&json_value, &partition_columns).unwrap();
         assert!(partition_values.is_empty());
     }
@@ -415,14 +444,12 @@ mod tests {
     #[test]
     fn test_kafka_consumer_client_creation() {
         let config = create_test_config();
-        
+
         // This test verifies that the client can be created with valid configuration
         // In a real test environment, you would need a running Kafka instance
         // For unit testing, we're just testing the configuration setup
-        let result = std::panic::catch_unwind(|| {
-            KafkaConsumerClient::new(&config)
-        });
-        
+        let result = std::panic::catch_unwind(|| KafkaConsumerClient::new(&config));
+
         // The creation might fail due to no Kafka broker, but the config should be valid
         // We're mainly testing that the configuration is properly set up
         match result {
@@ -444,11 +471,14 @@ mod tests {
     #[test]
     fn test_kafka_config_defaults() {
         let config = create_test_config();
-        
+
         assert_eq!(config.kafka.bootstrap_servers, "localhost:9092");
         assert_eq!(config.kafka.topic, "test-topic");
         assert_eq!(config.kafka.consumer_group, "test-group");
-        assert_eq!(config.kafka.security_protocol, Some("PLAINTEXT".to_string()));
+        assert_eq!(
+            config.kafka.security_protocol,
+            Some("PLAINTEXT".to_string())
+        );
         assert_eq!(config.kafka.auto_offset_reset, Some("earliest".to_string()));
         assert_eq!(config.kafka.session_timeout_ms, Some(30000));
         assert_eq!(config.kafka.heartbeat_interval_ms, Some(3000));
@@ -459,9 +489,9 @@ mod tests {
     fn test_kafka_message_with_no_headers() {
         let mut message = create_test_kafka_message();
         message.headers.clear();
-        
+
         assert_eq!(message.headers.len(), 0);
-        
+
         // The message should still be valid for processing
         let result = parse_json_message(&message);
         assert!(result.is_ok());
@@ -471,9 +501,9 @@ mod tests {
     fn test_kafka_message_with_no_key() {
         let mut message = create_test_kafka_message();
         message.key = None;
-        
+
         assert!(message.key.is_none());
-        
+
         // The message should still be valid for processing
         let result = parse_json_message(&message);
         assert!(result.is_ok());
@@ -483,9 +513,9 @@ mod tests {
     fn test_kafka_message_with_no_timestamp() {
         let mut message = create_test_kafka_message();
         message.timestamp = None;
-        
+
         assert!(message.timestamp.is_none());
-        
+
         // The message should still be valid for processing
         let result = parse_json_message(&message);
         assert!(result.is_ok());

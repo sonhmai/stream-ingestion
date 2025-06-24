@@ -78,10 +78,16 @@ pub enum DataType {
     TimestampMillisecond,
     TimestampMicrosecond,
     TimestampNanosecond,
-    Decimal128 { precision: u8, scale: i8 },
+    Decimal128 {
+        precision: u8,
+        scale: i8,
+    },
     List(Box<DataType>),
     Struct(Vec<SchemaField>),
-    Map { key: Box<DataType>, value: Box<DataType> },
+    Map {
+        key: Box<DataType>,
+        value: Box<DataType>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -165,8 +171,9 @@ impl IngestConfig {
     }
 
     pub fn get_delta_table_path(&self) -> String {
-        format!("s3a://{}/{}/{}", 
-            self.s3.bucket, 
+        format!(
+            "s3a://{}/{}/{}",
+            self.s3.bucket,
             self.s3.prefix.trim_end_matches('/'),
             self.delta.table_name
         )
@@ -176,8 +183,8 @@ impl IngestConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn create_test_config() -> IngestConfig {
         IngestConfig {
@@ -239,50 +246,75 @@ mod tests {
     fn test_config_validation_empty_bootstrap_servers() {
         let mut config = create_test_config();
         config.kafka.bootstrap_servers = "".to_string();
-        
+
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("bootstrap servers cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("bootstrap servers cannot be empty")
+        );
     }
 
     #[test]
     fn test_config_validation_empty_topic() {
         let mut config = create_test_config();
         config.kafka.topic = "".to_string();
-        
+
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("topic cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("topic cannot be empty")
+        );
     }
 
     #[test]
     fn test_config_validation_empty_bucket() {
         let mut config = create_test_config();
         config.s3.bucket = "".to_string();
-        
+
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("bucket cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("bucket cannot be empty")
+        );
     }
 
     #[test]
     fn test_config_validation_empty_table_name() {
         let mut config = create_test_config();
         config.delta.table_name = "".to_string();
-        
+
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("table name cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("table name cannot be empty")
+        );
     }
 
     #[test]
     fn test_config_validation_empty_schema() {
         let mut config = create_test_config();
         config.delta.schema = vec![];
-        
+
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("schema cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("schema cannot be empty")
+        );
     }
 
     #[test]
@@ -296,7 +328,7 @@ mod tests {
     fn test_get_delta_table_path_with_trailing_slash() {
         let mut config = create_test_config();
         config.s3.prefix = "test-prefix/".to_string();
-        
+
         let path = config.get_delta_table_path();
         assert_eq!(path, "s3a://test-bucket/test-prefix/test_table");
     }
@@ -347,9 +379,9 @@ processing:
 
         let mut temp_file = NamedTempFile::new().unwrap();
         temp_file.write_all(yaml_content.as_bytes()).unwrap();
-        
+
         let config = IngestConfig::from_file(temp_file.path().to_str().unwrap()).unwrap();
-        
+
         assert_eq!(config.kafka.bootstrap_servers, "localhost:9092");
         assert_eq!(config.kafka.topic, "test-topic");
         assert_eq!(config.s3.bucket, "test-bucket");
@@ -391,38 +423,54 @@ processing:
 "#;
 
         // Clean up before setting
-        unsafe { std::env::remove_var("INGEST_CONFIG"); }
-        unsafe { std::env::set_var("INGEST_CONFIG", yaml_content); }
-        
+        unsafe {
+            std::env::remove_var("INGEST_CONFIG");
+        }
+        unsafe {
+            std::env::set_var("INGEST_CONFIG", yaml_content);
+        }
+
         let config = IngestConfig::from_env().unwrap();
-        
+
         assert_eq!(config.kafka.topic, "env-topic");
         assert_eq!(config.s3.bucket, "env-bucket");
         assert_eq!(config.processing.batch_size, 500);
-        
+
         // Clean up after test
-        unsafe { std::env::remove_var("INGEST_CONFIG"); }
+        unsafe {
+            std::env::remove_var("INGEST_CONFIG");
+        }
     }
 
     #[test]
     fn test_config_from_env_missing() {
-        unsafe { std::env::remove_var("INGEST_CONFIG"); }
-        
+        unsafe {
+            std::env::remove_var("INGEST_CONFIG");
+        }
+
         let result = IngestConfig::from_env();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("INGEST_CONFIG environment variable not set"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("INGEST_CONFIG environment variable not set")
+        );
     }
 
     #[test]
     fn test_processing_config_default() {
         let config = ProcessingConfig::default();
-        
+
         assert_eq!(config.batch_size, 1000);
         assert_eq!(config.batch_timeout_ms, 30000);
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.retry_delay_ms, 1000);
         assert!(config.enable_compression);
-        assert!(matches!(config.compression_type, Some(CompressionType::Snappy)));
+        assert!(matches!(
+            config.compression_type,
+            Some(CompressionType::Snappy)
+        ));
         assert!(config.enable_metrics);
         assert_eq!(config.checkpoint_interval_ms, Some(60000));
     }
@@ -434,7 +482,10 @@ processing:
             DataType::Int64,
             DataType::Utf8,
             DataType::TimestampMillisecond,
-            DataType::Decimal128 { precision: 10, scale: 2 },
+            DataType::Decimal128 {
+                precision: 10,
+                scale: 2,
+            },
         ];
 
         for data_type in types {
