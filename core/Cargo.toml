@@ -1,0 +1,20 @@
+[package]
+name = "ingest-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# use the versions specified in the root `[workspace.dependencies]`
+deltalake = { workspace = true }
+arrow = { workspace = true }
+rdkafka = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+serde_yaml = {workspace = true}
+tracing-subscriber = {workspace = true}
+chrono = {workspace = true}
+thiserror = {workspace = true}

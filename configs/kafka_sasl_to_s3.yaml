@@ -33,12 +33,11 @@ streams:
       enable_metrics: true
       checkpoint_interval_ms: 30000
 
-    target:
-      type: "s3"
+    sink:
+      type: "delta"
       options:
-        format: "delta"
         path: "s3://data-lake/raw/source1/schema1/customer"
-        region: "us-west-2"
+        region: "ap-southeast-1"
         database_name: "raw"
         catalog_name: "source1"
         table_name: "source1-schema1-customer"
