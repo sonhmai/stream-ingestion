@@ -1,0 +1,9 @@
+[package]
+name = "runner-container"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ingest-core = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

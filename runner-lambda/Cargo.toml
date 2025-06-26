@@ -1,0 +1,15 @@
+[package]
+name = "runner-lambda"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "bootstrap" # AWS Lambda expects this name for custom runtimes
+path = "src/main.rs"
+
+[dependencies]
+ingest-core = { workspace = true }
+lambda_runtime = "0.14.1"
+lambda-web = "0.2"
+anyhow = "1.0.98"
+serde = { version = "1.0.219", features = ["derive"] }
