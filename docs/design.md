@@ -38,11 +38,6 @@ ingest deploy --config configs/source_kafka_sasl.yaml
 ### API
 todo
 
-## Fault Tolerance
-
-Failure modes:
-- lambda failed while consuming Kafka
-- lambda failed while writing S3
 
 ### Checkpointing
 
