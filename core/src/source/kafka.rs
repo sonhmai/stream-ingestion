@@ -11,24 +11,93 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::config::{IngestConfig, KafkaOptions};
-use crate::errors::SourceError;
-use crate::source::{CheckpointHandle, MessageBatch, Source};
+use crate::errors::{KafkaError, SourceError};
+use crate::source::{CheckpointHandle, MessageBatch, Source, SourceMessage};
 
 pub struct KafkaSource {
-    // TODO
+    client: KafkaConsumerClient,
+    batch_size: usize,
+    batch_timeout_ms: u64,
+}
+
+impl KafkaSource {
+    pub async fn new(config: &KafkaOptions) -> Result<Self> {
+        let client = KafkaConsumerClient::new(config)?;
+        client.subscribe().await?;
+
+        Ok(Self {
+            client,
+            batch_size: config.max_poll_records.unwrap_or(100) as usize,
+            batch_timeout_ms: 1000, // Default 1 second timeout for batch collection
+        })
+    }
 }
 
 impl Source for KafkaSource {
     async fn next_batch(&self) -> std::result::Result<MessageBatch, SourceError> {
-        todo!()
+    let messages = self
+        .client
+        .consume_batch(self.batch_size, self.batch_timeout_ms)
+        .await
+        .map_err(|e| SourceError::Connection {
+            source: Box::new(KafkaError::Consumption {
+                reason: e.to_string(),
+            })
+        })?;
+
+
+        if messages.is_empty() {
+        return Ok(MessageBatch { messages: vec![] });
     }
 
+    let source_messages: Vec<SourceMessage> = messages
+        .into_iter()
+        .filter_map(|kafka_msg| {
+            let payload = kafka_msg.payload?;
+            
+            let mut headers = HashMap::new();
+            for (key, value) in kafka_msg.headers {
+                headers.insert(key, value.into_bytes());
+            }
+            Some(SourceMessage {
+                payload: payload.into_bytes(),
+                topic: kafka_msg.topic,
+                partition: kafka_msg.partition as usize,
+                headers,
+            })
+        })
+        .collect();
+
+    Ok(MessageBatch {
+        messages: source_messages,
+    })
+}
+
     async fn commit(&self, handles: &[CheckpointHandle]) -> std::result::Result<(), SourceError> {
-        todo!()
+        let messages: Vec<KafkaMessage> = handles
+            .iter()
+            .map(|handle| KafkaMessage {
+                topic: handle.topic.clone(),
+                partition: handle.partition,
+                offset: handle.offset,
+                key: None,
+                payload: None,
+                timestamp: None,
+                headers: HashMap::new(),
+            })
+            .collect();
+
+        self.client
+            .commit_offsets(&messages)
+            .await
+            .map_err(|e| SourceError::Kafka(KafkaError::OffsetCommit {
+                reason: e.to_string(),
+            }))
     }
 
     async fn shutdown(&self) -> std::result::Result<(), SourceError> {
-        todo!()
+        // The rdkafka consumer will automatically close when dropped
+        Ok(())
     }
 }
 
