@@ -5,7 +5,7 @@ use crate::source::{CheckpointHandle, MessageBatch, Source};
 pub struct KinesisStreamSource {}
 
 impl Source for KinesisStreamSource {
-    async fn next_batch(&self) -> Result<MessageBatch, Box<dyn Error + Send + Sync>> {
+    async fn next_batch(&self) -> Result<MessageBatch, SourceError> {
         todo!()
     }
 
@@ -13,7 +13,7 @@ impl Source for KinesisStreamSource {
         todo!()
     }
 
-    async fn shutdown(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn shutdown(&self) -> Result<(), SourceError> {
         todo!()
     }
 }

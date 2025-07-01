@@ -6,7 +6,7 @@ members = [
 ]
 resolver = "2"
 
-[package]
+[workspace.package]
 name = "stream-ingest"
 version = "0.1.0"
 edition = "2024"
@@ -29,7 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 thiserror = "2.0.12"
 
-[dev-dependencies]
+[workspace.dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.0"
 mockall = "0.12"

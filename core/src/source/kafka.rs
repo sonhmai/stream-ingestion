@@ -282,4 +282,8 @@ pub fn extract_partition_values(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn kafka_source_consume() {
+        println!("dummy test")
+    }
 }
