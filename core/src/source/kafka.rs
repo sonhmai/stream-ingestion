@@ -35,9 +35,7 @@ impl KafkaSource {
 
 impl Source for KafkaSource {
     async fn next_batch(&self) -> std::result::Result<MessageBatch, SourceError> {
-    let messages = self
-        .client
-        .consume_batch(self.batch_size, self.batch_timeout_ms)
+    let messages = self.client.consume_batch(self.batch_size, self.batch_timeout_ms)
         .await
         .map_err(|e| SourceError::Connection {
             source: Box::new(KafkaError::Consumption {
@@ -45,55 +43,81 @@ impl Source for KafkaSource {
             })
         })?;
 
-
-        if messages.is_empty() {
-        return Ok(MessageBatch { messages: vec![] });
+    if messages.is_empty() {
+        return Ok(MessageBatch { messages: vec![], handles: vec![] });
     }
 
-    let source_messages: Vec<SourceMessage> = messages
-        .into_iter()
-        .filter_map(|kafka_msg| {
-            let payload = kafka_msg.payload?;
-            
+    let mut source_messages = Vec::with_capacity(messages.len());
+    let mut handles = Vec::with_capacity(messages.len());
+
+    for kafka_msg in messages {
+        if let Some(payload) = kafka_msg.payload {
+            let checkpoint = KafkaCheckpoint {
+                topic: kafka_msg.topic.clone(),
+                partition: kafka_msg.partition,
+                offset: kafka_msg.offset,
+            };
+
             let mut headers = HashMap::new();
             for (key, value) in kafka_msg.headers {
                 headers.insert(key, value.into_bytes());
             }
-            Some(SourceMessage {
+
+            source_messages.push(SourceMessage {
                 payload: payload.into_bytes(),
                 topic: kafka_msg.topic,
                 partition: kafka_msg.partition as usize,
                 headers,
-            })
-        })
-        .collect();
+            });
+            
+            handles.push(checkpoint.to_bytes());
+        }
+    }
 
     Ok(MessageBatch {
         messages: source_messages,
+        handles,  // Assuming MessageBatch struct is modified to store handles
     })
 }
 
     async fn commit(&self, handles: &[CheckpointHandle]) -> std::result::Result<(), SourceError> {
-        let messages: Vec<KafkaMessage> = handles
-            .iter()
-            .map(|handle| KafkaMessage {
-                topic: handle.topic.clone(),
-                partition: handle.partition,
-                offset: handle.offset,
+    if handles.is_empty() {
+        return Ok(());
+    }
+
+    // Convert checkpoint handles back to KafkaMessages
+    let messages: Vec<KafkaMessage> = handles
+        .iter()
+        .filter_map(|handle| {
+            KafkaCheckpoint::from_bytes(handle).map(|checkpoint| KafkaMessage {
+                topic: checkpoint.topic,
+                partition: checkpoint.partition,
+                offset: checkpoint.offset,
                 key: None,
                 payload: None,
                 timestamp: None,
                 headers: HashMap::new(),
             })
-            .collect();
+        })
+        .collect();
 
-        self.client
-            .commit_offsets(&messages)
-            .await
-            .map_err(|e| SourceError::Kafka(KafkaError::OffsetCommit {
-                reason: e.to_string(),
-            }))
+    if messages.is_empty() {
+        return Err(SourceError::Unrecoverable(Box::new(
+            KafkaError::OffsetCommit {
+                reason: "Invalid checkpoint handles".to_string(),
+            }
+        )));
     }
+
+    self.client
+        .commit_offsets(&messages)
+        .await
+        .map_err(|e| SourceError::Connection {
+            source: Box::new(KafkaError::OffsetCommit {
+                reason: e.to_string(),
+            })
+        })
+}
 
     async fn shutdown(&self) -> std::result::Result<(), SourceError> {
         // The rdkafka consumer will automatically close when dropped
@@ -354,5 +378,45 @@ mod tests {
     #[test]
     fn kafka_source_consume() {
         println!("dummy test")
+    }
+}
+
+#[derive(Debug)]
+struct KafkaCheckpoint {
+    topic: String,
+    partition: i32,
+    offset: i64,
+}
+
+impl KafkaCheckpoint {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Simple serialization: topic length + topic + partition + offset
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(self.topic.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(self.topic.as_bytes());
+        bytes.extend_from_slice(&self.partition.to_le_bytes());
+        bytes.extend_from_slice(&self.offset.to_le_bytes());
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 { // Minimum length: 4 (topic len) + 4 (partition) + 8 (offset)
+            return None;
+        }
+        
+        let topic_len = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
+        if bytes.len() < 12 + topic_len {
+            return None;
+        }
+
+        let topic = String::from_utf8(bytes[4..4+topic_len].to_vec()).ok()?;
+        let partition = i32::from_le_bytes(bytes[4+topic_len..8+topic_len].try_into().ok()?);
+        let offset = i64::from_le_bytes(bytes[8+topic_len..16+topic_len].try_into().ok()?);
+
+        Some(Self {
+            topic,
+            partition,
+            offset,
+        })
     }
 }
