@@ -16,9 +16,6 @@ pub struct Ingestor {
 }
 
 impl Ingestor {
-    pub fn run(&self, p0: Duration, p1: bool) -> F {
-        todo!()
-    }
 }
 
 impl Ingestor {
