@@ -1,3 +1,4 @@
+use std::time::Duration;
 use crate::config::IngestConfig;
 use crate::errors;
 use crate::errors::IngestionError;
@@ -12,6 +13,12 @@ pub struct Ingestor {
     kafka_client: KafkaConsumerClient,
     delta_sink: DeltaSink,
     metrics: IngestMetrics,
+}
+
+impl Ingestor {
+    pub fn run(&self, p0: Duration, p1: bool) -> F {
+        todo!()
+    }
 }
 
 impl Ingestor {

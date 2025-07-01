@@ -1,7 +1,10 @@
 [package]
 name = "ingest-core"
 version = "0.1.0"
-edition = "2024"
+edition = { workspace = true }
+
+[lib]
+name = "ingest_core"
 
 [dependencies]
 # use the versions specified in the root `[workspace.dependencies]`
