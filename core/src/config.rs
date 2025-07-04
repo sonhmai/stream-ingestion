@@ -220,7 +220,6 @@ impl IngestConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_parse_actual_config_file() {
