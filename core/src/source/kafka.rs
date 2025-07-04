@@ -374,6 +374,47 @@ pub fn extract_partition_values(
     Ok(partition_values)
 }
 
+impl KafkaCheckpoint {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Simple serialization: topic length + topic + partition + offset
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(self.topic.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(self.topic.as_bytes());
+        bytes.extend_from_slice(&self.partition.to_le_bytes());
+        bytes.extend_from_slice(&self.offset.to_le_bytes());
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 {
+            // Minimum length: 4 (topic len) + 4 (partition) + 8 (offset)
+            return None;
+        }
+
+        let topic_len = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
+        if bytes.len() < 12 + topic_len {
+            return None;
+        }
+
+        let topic = String::from_utf8(bytes[4..4 + topic_len].to_vec()).ok()?;
+        let partition = i32::from_le_bytes(bytes[4 + topic_len..8 + topic_len].try_into().ok()?);
+        let offset = i64::from_le_bytes(bytes[8 + topic_len..16 + topic_len].try_into().ok()?);
+
+        Some(Self {
+            topic,
+            partition,
+            offset,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct KafkaCheckpoint {
+    topic: String,
+    partition: i32,
+    offset: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,46 +553,5 @@ mod tests {
             .health_check()
             .await
             .expect("Health check should pass");
-    }
-}
-
-#[derive(Debug)]
-struct KafkaCheckpoint {
-    topic: String,
-    partition: i32,
-    offset: i64,
-}
-
-impl KafkaCheckpoint {
-    fn to_bytes(&self) -> Vec<u8> {
-        // Simple serialization: topic length + topic + partition + offset
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&(self.topic.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(self.topic.as_bytes());
-        bytes.extend_from_slice(&self.partition.to_le_bytes());
-        bytes.extend_from_slice(&self.offset.to_le_bytes());
-        bytes
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 16 {
-            // Minimum length: 4 (topic len) + 4 (partition) + 8 (offset)
-            return None;
-        }
-
-        let topic_len = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
-        if bytes.len() < 12 + topic_len {
-            return None;
-        }
-
-        let topic = String::from_utf8(bytes[4..4 + topic_len].to_vec()).ok()?;
-        let partition = i32::from_le_bytes(bytes[4 + topic_len..8 + topic_len].try_into().ok()?);
-        let offset = i64::from_le_bytes(bytes[8 + topic_len..16 + topic_len].try_into().ok()?);
-
-        Some(Self {
-            topic,
-            partition,
-            offset,
-        })
     }
 }
