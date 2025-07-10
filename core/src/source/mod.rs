@@ -19,6 +19,7 @@ pub struct SourceMessage {
 
 pub struct MessageBatch {
     messages: Vec<SourceMessage>,
+    handles: Vec<CheckpointHandle>
 }
 
 /// An opaque handle used to commit a message's progress.
@@ -39,3 +40,4 @@ trait Source {
     /// This should be called during graceful shutdown.
     async fn shutdown(&self) -> Result<(), SourceError>;
 }
+
