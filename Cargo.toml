@@ -15,7 +15,7 @@ edition = "2024"
 ingest-core = { path = "core" }
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 
-rdkafka = { version = "0.36.2", features = ["dynamic-linking"] }
+rdkafka = { version = "0.38.0", features = ["cmake-build"] }
 
 deltalake = { version = "0.26.2", features = ["s3", "datafusion"] }
 arrow = { version = "55.1.0", features = ["json"] }
