@@ -13,3 +13,11 @@ This framework provides a configuration-driven approach to streaming data ingest
 - **Check**: `cargo check`
 - **Format**: `cargo fmt`
 - **Lint**: `cargo clippy`
+
+If has error, install `brew install pkg-config`
+``` 
+ --- stderr
+  librdkafka will be linked dynamically
+  librdkafka 2.3.0 cannot be found on the system: Could not run `PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags rdkafka 'rdkafka >= 2.3.0'`
+  The pkg-config command could not be found.
+```
