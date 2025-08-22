@@ -4,6 +4,7 @@ mod kinesis_stream;
 
 use std::collections::HashMap;
 use crate::errors::SourceError;
+use async_trait::async_trait;
 
 /// A message received from source regardless of whether it's Kafka, Kinesis Stream, Pulsar, etc.
 pub struct SourceMessage {
@@ -26,6 +27,7 @@ pub struct MessageBatch {
 /// For example: offset for Kafka, sequence number for Kinesis Stream, etc.
 pub type CheckpointHandle = Vec<u8>;
 
+#[async_trait]
 pub trait Source {
     /// Receives a batch of messages from the source.
     ///

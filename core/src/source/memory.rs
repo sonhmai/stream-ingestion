@@ -1,5 +1,6 @@
 use crate::errors::SourceError;
 use crate::source::{CheckpointHandle, MessageBatch, Source, SourceMessage};
+use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
@@ -37,6 +38,7 @@ impl MemorySource {
     }
 }
 
+#[async_trait]
 impl Source for MemorySource {
     async fn next_batch(&self) -> Result<MessageBatch, SourceError> {
         let mut queue_guard = self.messages_queue.lock().await;

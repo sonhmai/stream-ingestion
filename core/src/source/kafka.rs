@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 use crate::config::{IngestConfig, KafkaOptions};
 use crate::errors::{KafkaError, SourceError};
 use crate::source::{CheckpointHandle, MessageBatch, Source, SourceMessage};
+use async_trait::async_trait;
 
 pub struct KafkaSource {
     client: KafkaConsumerClient,
@@ -32,6 +33,7 @@ impl KafkaSource {
     }
 }
 
+#[async_trait]
 impl Source for KafkaSource {
     async fn next_batch(&self) -> std::result::Result<MessageBatch, SourceError> {
         let messages = self
