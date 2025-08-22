@@ -25,13 +25,8 @@ serde_yaml = "0.9"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 thiserror = "2.0.12"
+tempfile = "3.0"
 
 [workspace.dev-dependencies]
-tokio-test = "0.4"
-tempfile = "3.0"
-mockall = "0.12"
-wiremock = "0.6"
-testcontainers = "0.15"

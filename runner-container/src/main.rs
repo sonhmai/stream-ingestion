@@ -16,7 +16,7 @@ use ingest_core::ingestor::Ingestor;
 async fn main() -> Result<()> {
     // this is only sample code
     let config = IngestConfig::from_env()?;
-    let engine = Ingestor::new(config).await?; // Assuming `new` can't fail with SourceError
+    let engine = Ingestor::from_config(config)?;
 
     loop {
         match engine.run_once().await.context("Ingestion cycle failed") {

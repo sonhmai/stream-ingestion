@@ -4,6 +4,7 @@ use crate::source::Source;
 use crate::telemetry::IngestMetrics;
 use anyhow::Result;
 use std::rc::Rc;
+use crate::config::IngestConfig;
 
 /// The ingestor orchestrates the data flow from source -> sink.
 pub struct Ingestor {
@@ -21,6 +22,10 @@ impl Ingestor {
             sink: sink.clone(),
             metrics: IngestMetrics::default()
         }
+    }
+
+    pub fn from_config(ingest_config: IngestConfig) -> Result<Self> {
+        todo!()
     }
 
     /// Runs a single poll-process-flush-commit cycle.

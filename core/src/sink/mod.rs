@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::source::MessageBatch;
+use arrow::record_batch::RecordBatch;
 
 pub mod delta;
 
@@ -9,7 +9,7 @@ pub mod delta;
 #[async_trait]
 pub trait Sink: Send + Sync {
     /// Add a micro-batch to the sink
-    async fn add(&self, message_batch: MessageBatch) -> Result<()>;
+    async fn add(&self, record_batch: RecordBatch) -> Result<()>;
 
     /// Flush the sink, make sure all buffered messages are flushed
     async fn flush(&self) -> Result<()>;
