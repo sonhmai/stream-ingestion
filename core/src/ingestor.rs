@@ -1,26 +1,26 @@
-use std::time::Duration;
-use crate::config::IngestConfig;
-use crate::errors;
 use crate::errors::IngestionError;
-use crate::sink::delta::DeltaSink;
-use crate::source::kafka::KafkaConsumerClient;
+use crate::sink::Sink;
+use crate::source::Source;
 use crate::telemetry::IngestMetrics;
 use anyhow::Result;
+use std::rc::Rc;
 
 /// The ingestor orchestrates the data flow from source -> sink.
 pub struct Ingestor {
-    config: IngestConfig,
-    kafka_client: KafkaConsumerClient,
-    delta_sink: DeltaSink,
+    source: Rc<dyn Source>,
+    sink: Rc<dyn Sink>,
     metrics: IngestMetrics,
 }
 
-impl Ingestor {
-}
+impl Ingestor {}
 
 impl Ingestor {
-    pub async fn new(config: IngestConfig) -> errors::Result<Self> {
-        todo!()
+    pub fn new(source: Rc<dyn Source>, sink: Rc<dyn Sink>) -> Self {
+        Self {
+            source: source.clone(),
+            sink: sink.clone(),
+            metrics: IngestMetrics::default()
+        }
     }
 
     /// Runs a single poll-process-flush-commit cycle.
