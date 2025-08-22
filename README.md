@@ -8,11 +8,11 @@ This framework provides a configuration-driven approach to streaming data ingest
 
 ## Development Commands
 
-- **Build**: `cargo build --release`
-- **Test**: `cargo test --lib` (unit tests)
-- **Check**: `cargo check`
-- **Format**: `cargo fmt`
-- **Lint**: `cargo clippy`
+```shell
+cargo build --release --target=x86_64-unknown-linux-musl
+```
+
+## Build issues
 
 If has error, install `brew install pkg-config`
 ``` 
@@ -21,3 +21,6 @@ If has error, install `brew install pkg-config`
   librdkafka 2.3.0 cannot be found on the system: Could not run `PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags rdkafka 'rdkafka >= 2.3.0'`
   The pkg-config command could not be found.
 ```
+
+- https://www.oliverlooney.com/blogs/How-to-cross-compile-rust-lambda-for-Amazon-Linux-2-Lambda-Runtime
+- https://loige.co/building_x86_rust-containers-from-mac-silicon/
