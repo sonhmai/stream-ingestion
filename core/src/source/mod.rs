@@ -19,8 +19,8 @@ pub struct SourceMessage {
 }
 
 pub struct MessageBatch {
-    messages: Vec<SourceMessage>,
-    handles: Vec<CheckpointHandle>
+    pub messages: Vec<SourceMessage>,
+    pub handles: Vec<CheckpointHandle>,
 }
 
 /// An opaque handle used to commit a message's progress.

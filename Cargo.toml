@@ -30,3 +30,8 @@ thiserror = "2.0.12"
 tempfile = "3.0"
 
 [workspace.dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+mockall = "0.12"
+wiremock = "0.6"
+testcontainers = "0.15"

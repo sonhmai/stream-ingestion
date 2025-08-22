@@ -1,4 +1,5 @@
 use thiserror::Error;
+use arrow::error::ArrowError;
 
 #[derive(Error, Debug)]
 pub enum IngestionError {
@@ -22,6 +23,14 @@ pub enum IngestionError {
 
     #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
+}
+
+impl From<ArrowError> for IngestionError {
+    fn from(err: ArrowError) -> Self {
+        IngestionError::Serialization(SerializationError::Arrow {
+            reason: err.to_string(),
+        })
+    }
 }
 
 #[derive(Error, Debug)]
