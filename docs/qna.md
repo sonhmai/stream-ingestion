@@ -125,3 +125,13 @@ Use anyhow
 - in `main.rs` or top-level app logic.
 - need to propagate an error upwards without inspecting its type.
 - add contextual info to errors as they bubble up.
+
+### why need async_trait in Source and Sink to make the object-safe?
+
+```
+#[async_trait]
+pub trait Source 
+
+#[async_trait]
+pub trait Sink 
+```
