@@ -1,8 +1,8 @@
 pub mod kafka;
+pub mod memory;
 mod kinesis_stream;
 
 use std::collections::HashMap;
-use std::error::Error;
 use crate::errors::SourceError;
 
 /// A message received from source regardless of whether it's Kafka, Kinesis Stream, Pulsar, etc.
@@ -26,7 +26,7 @@ pub struct MessageBatch {
 /// For example: offset for Kafka, sequence number for Kinesis Stream, etc.
 pub type CheckpointHandle = Vec<u8>;
 
-trait Source {
+pub trait Source {
     /// Receives a batch of messages from the source.
     ///
     /// This method should block until messages are available or a timeout occurs.
